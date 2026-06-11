@@ -371,6 +371,86 @@ state::unset_prefix() {
 }
 [[ -v TEST_FLAG ]] || readonly -f state::unset_prefix
 
+#--------------------------------------------------
+# Function:
+#   state::commit <name>...
+#
+# Description:
+#   Promotes one or more inputs from the working overlay down to the committed
+#   inputs/, called once the action an input drives has been performed (an SSH key
+#   generated, a directory created), so the saved value reflects real machine
+#   state rather than a still-pending answer. Each named input is moved when a
+#   working copy exists; a name with no working copy - never entered this run, or
+#   already committed - is skipped. A no-op when no overlay is active. Moves files
+#   into inputs/.
+#
+# Arguments:
+#   <name>...  One or more input names to commit
+#
+# Returns:
+#   0 on success
+#
+# Example:
+#   state::commit workspace.personal.gpg.type workspace.personal.gpg.comment
+#--------------------------------------------------
+state::commit() {
+    local committed
+    local name
+    local working
+
+    working="${MACHINE_SETUP_INPUTS_WORKING:-}"
+    [[ -n "$working" ]] || return 0               # no overlay: already committed
+
+    committed="$(state::_root)/inputs"
+    for name in "$@"
+    do
+        [[ -f "$working/$name" ]] || continue
+        mkdir -p "$(dirname "$committed/$name")"
+        mv -f "$working/$name" "$committed/$name"
+    done
+}
+[[ -v TEST_FLAG ]] || readonly -f state::commit
+
+#--------------------------------------------------
+# Function:
+#   state::commit_prefix <prefix>
+#
+# Description:
+#   Promotes every working-overlay input whose name begins with <prefix> down to
+#   the committed inputs/, the bulk counterpart to state::commit for committing a
+#   whole namespace at once (for example all of one workspace's slug-namespaced
+#   inputs once it is provisioned). A no-op when no overlay is active or the prefix
+#   matches nothing. Moves files into inputs/.
+#
+# Arguments:
+#   <prefix>  The input-name prefix to commit
+#
+# Returns:
+#   0 on success
+#
+# Example:
+#   state::commit_prefix workspace.personal.
+#--------------------------------------------------
+state::commit_prefix() {
+    local committed
+    local file
+    local prefix
+    local working
+
+    prefix="$1"
+    working="${MACHINE_SETUP_INPUTS_WORKING:-}"
+    [[ -n "$working" ]] || return 0
+
+    committed="$(state::_root)/inputs"
+    mkdir -p "$committed"
+    for file in "$working/$prefix"*
+    do
+        [[ -e "$file" ]] || continue              # the glob matched nothing
+        mv -f "$file" "$committed/$(basename "$file")"
+    done
+}
+[[ -v TEST_FLAG ]] || readonly -f state::commit_prefix
+
 # ─── Constants / globals ────────────────────────────────────────────────────────
 
 # This library's own directory, so the sibling library is sourced regardless of

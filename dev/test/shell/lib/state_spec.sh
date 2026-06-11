@@ -331,4 +331,63 @@ Describe 'lib/state.sh'
 
     End
 
+    # ==========================================================================
+    # state::commit
+    # ==========================================================================
+    Describe 'state::commit'
+
+        It 'moves a working input down to the committed store'
+            helper::overlay workspace
+            helper::seed_working workspace.personal.path /srv/personal
+
+            When call state::commit workspace.personal.path
+            The status should be success
+            The stdout should be blank
+            The stderr should be blank
+            The path "$MACHINE_SETUP_INPUTS_WORKING/workspace.personal.path" should not be exist
+            The contents of file "$XDG_STATE_HOME/machine-setup/inputs/workspace.personal.path" should equal '/srv/personal'
+        End
+
+        It 'skips an input with no working copy'
+            helper::overlay workspace
+
+            When call state::commit workspace.personal.path
+            The status should be success
+            The stdout should be blank
+            The stderr should be blank
+            The path "$XDG_STATE_HOME/machine-setup/inputs/workspace.personal.path" should not be exist
+        End
+
+        It 'is a no-op when no overlay is active'
+            When call state::commit workspace.personal.path
+            The status should be success
+            The stdout should be blank
+            The stderr should be blank
+        End
+
+    End
+
+    # ==========================================================================
+    # state::commit_prefix
+    # ==========================================================================
+    Describe 'state::commit_prefix'
+
+        It 'moves every working input matching the prefix down to the committed store'
+            helper::overlay workspace
+            helper::seed_working workspace.personal.path /srv/personal
+            helper::seed_working workspace.personal.user.email ada@example.com
+            helper::seed_working workspace.acme.path /srv/acme
+
+            When call state::commit_prefix workspace.personal.
+            The status should be success
+            The stdout should be blank
+            The stderr should be blank
+            The contents of file "$XDG_STATE_HOME/machine-setup/inputs/workspace.personal.path" should equal '/srv/personal'
+            The contents of file "$XDG_STATE_HOME/machine-setup/inputs/workspace.personal.user.email" should equal 'ada@example.com'
+            The path "$XDG_STATE_HOME/machine-setup/inputs/workspace.acme.path" should not be exist
+            The path "$MACHINE_SETUP_INPUTS_WORKING/workspace.acme.path" should be exist
+        End
+
+    End
+
 End
