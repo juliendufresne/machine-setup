@@ -197,4 +197,174 @@ Describe 'lib/provisioner.sh'
 
     End
 
+    # ==========================================================================
+    # provisioner::run
+    # ==========================================================================
+    Describe 'provisioner::run'
+
+        # Every step is stubbed to log so the ordering is asserted without a real fetch.
+        output::stage() { printf 'stage: %s\n' "$1" >>"$HOME/log"; }
+        provisioner::_stage_inputs() { printf 'staged\n' >>"$HOME/log"; }
+        provisioner::request_inputs() { printf 'inputs\n' >>"$HOME/log"; }
+        state::commit_prefix() { printf 'commit:%s\n' "$1" >>"$HOME/log"; }
+        provisioner::run_installer() { printf 'installer\n' >>"$HOME/log"; }
+
+        It 'stages the inputs, collects the input, commits it, then runs the installer'
+            When call provisioner::run
+            The status should be success
+            The stdout should be blank
+            The stderr should be blank
+            The contents of file "$HOME/log" should equal "$(printf 'stage: Provisioning the workspace\nstaged\ninputs\ncommit:workspace.\ninstaller')"
+        End
+
+        It 'stops and propagates when the installer fails'
+            provisioner::run_installer() {
+                printf 'installer\n' >>"$HOME/log"
+
+                return 7
+            }
+
+            When call provisioner::run
+            The status should equal 7
+            The stdout should be blank
+            The stderr should be blank
+            The contents of file "$HOME/log" should equal "$(printf 'stage: Provisioning the workspace\nstaged\ninputs\ncommit:workspace.\ninstaller')"
+        End
+
+    End
+
+    # ==========================================================================
+    # provisioner::contains
+    # ==========================================================================
+    Describe 'provisioner::contains'
+
+        It 'is true when the needle is among the items'
+            When call provisioner::contains beta alpha beta gamma
+            The status should be success
+            The stdout should be blank
+            The stderr should be blank
+        End
+
+        It 'is false when the needle is absent'
+            When call provisioner::contains delta alpha beta gamma
+            The status should be failure
+            The stdout should be blank
+            The stderr should be blank
+        End
+
+        It 'is false when there are no items'
+            When call provisioner::contains delta
+            The status should be failure
+            The stdout should be blank
+            The stderr should be blank
+        End
+
+    End
+
+    # ==========================================================================
+    # provisioner::choose
+    # ==========================================================================
+    Describe 'provisioner::choose'
+
+        menu::select() {
+            local entry
+
+            for entry in "$@"
+            do
+                printf '%s\n' "$entry"
+            done
+        }
+
+        It 'offers exactly the fixed provisioners, both pre-ticked, in order'
+            PROVISIONER_DESCRIPTIONS=([workspace]='ws desc' [dotfiles]='df desc')
+
+            When call provisioner::choose
+            The status should be success
+            The line 1 of stdout should equal "$(printf '1\tworkspace\tws desc')"
+            The line 2 of stdout should equal "$(printf '1\tdotfiles\tdf desc')"
+            The stderr should be blank
+        End
+
+        It 'labels the menu as a provisioner menu'
+            menu::select() { printf '%s\n' "$MENU_PROMPT"; }
+
+            When call provisioner::choose
+            The status should be success
+            The stdout should include 'provisioners'
+            The stderr should be blank
+        End
+
+    End
+
+    # ==========================================================================
+    # provisioner::provision
+    # ==========================================================================
+    Describe 'provisioner::provision'
+
+        # The framework is the whole implementation; the seam loads the named
+        # provisioner's record into the PROVISIONER_* globals and drives
+        # provisioner::run. Stub it to echo the globals it reads.
+        provisioner::run() {
+            printf 'name=%s title=%s installer=%s\n' \
+                "$PROVISIONER_NAME" "$PROVISIONER_TITLE" "$PROVISIONER_DEFAULT_INSTALLER"
+        }
+
+        It 'loads the provisioner record into the globals and drives the framework'
+            PROVISIONER_TITLES=([workspace]='Workspace setup')
+            PROVISIONER_INSTALLERS=([workspace]='https://example.invalid/install.sh')
+
+            When call provisioner::provision workspace
+            The status should be success
+            The stdout should equal 'name=workspace title=Workspace setup installer=https://example.invalid/install.sh'
+            The stderr should be blank
+        End
+
+    End
+
+    # ==========================================================================
+    # provisioner::provision_all
+    # ==========================================================================
+    Describe 'provisioner::provision_all'
+
+        output::log() { :; }
+        provisioner::provision() { printf 'run %s\n' "$1"; }
+
+        It 'runs the chosen provisioners in PROVISIONERS order'
+            # Given reversed, the provisioners still run workspace before dotfiles.
+            When call provisioner::provision_all dotfiles workspace
+            The status should be success
+            The line 1 of stdout should equal 'run workspace'
+            The line 2 of stdout should equal 'run dotfiles'
+            The stderr should be blank
+        End
+
+        It 'runs only the chosen provisioners'
+            When call provisioner::provision_all dotfiles
+            The status should be success
+            The stdout should equal 'run dotfiles'
+            The stderr should be blank
+        End
+
+        It 'continues past a failing provisioner and returns the worst status'
+            provisioner::provision() {
+                [[ "$1" == workspace ]] && return 4
+
+                printf 'run %s\n' "$1"
+            }
+
+            When call provisioner::provision_all workspace dotfiles
+            The status should equal 4
+            The stdout should equal 'run dotfiles'
+            The stderr should be blank
+        End
+
+        It 'does nothing when no provisioners are given'
+            When call provisioner::provision_all
+            The status should be success
+            The stdout should be blank
+            The stderr should be blank
+        End
+
+    End
+
 End
