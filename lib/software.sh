@@ -398,6 +398,214 @@ software::status_report() {
 }
 [[ -v TEST_FLAG ]] || readonly -f software::status_report
 
+#--------------------------------------------------
+# Function:
+#   software::update_package_manager
+#
+# Description:
+#   Refreshes the host package manager once for the whole run by invoking the host
+#   OS token's system-upgrade script (libexec/<os>_<version>/system-upgrade), which
+#   updates the package lists then upgrades the installed packages. The
+#   system-upgrade script is not discoverable software (it lives beside the software/
+#   directory, not in it), so it is invoked directly rather than through
+#   software::run. The orchestrator resolves the host OS token through
+#   lib/os.sh; the script names the OS package manager. Called by
+#   software::install after every piece's inputs are collected and before any
+#   piece installs. Writes a progress line to stderr and the script's own step output;
+#   carries the script's exit status.
+#
+# Arguments:
+#   N/A
+#
+# Returns:
+#   0 when the refresh succeeded
+#   the exit status the system-upgrade script propagates on failure
+#
+# Example:
+#   software::update_package_manager
+#--------------------------------------------------
+software::update_package_manager() {
+    output::log 'Updating the package manager...'
+
+    "$LIBEXEC_DIR/$(os::file_token)/system-upgrade"
+}
+[[ -v TEST_FLAG ]] || readonly -f software::update_package_manager
+
+#--------------------------------------------------
+# Function:
+#   software::install <name>...
+#
+# Description:
+#   Sets up each selected piece of software in two phases. Phase 1 runs
+#   step-install-inputs for every piece (where the prompts and sudo warm-up happen)
+#   and keeps the ones that succeed, dropping a piece whose requirements are not met
+#   or that is a foreign install; with the inputs collected it refreshes the host
+#   package manager once (software::update_package_manager) so each piece installs
+#   against up-to-date package lists and an upgraded base. Phase 2 runs step-install
+#   for each survivor, which installs and configures the piece as one step and records
+#   ownership on success. The provisioners are not software and are not handled here:
+#   the orchestrator runs them after this returns. A failing piece does not abandon
+#   the rest: the loop continues and the worst exit status seen across the phases is
+#   returned. Skips with a message when no software is given. Writes progress to
+#   stderr; each piece's own output is left untouched, with whatever side effects
+#   setting it up entails.
+#
+# Arguments:
+#   <name>...  Zero or more selected software names to set up
+#
+# Returns:
+#   0 when every piece was set up or no software was given
+#   N the worst exit status seen across the phases
+#
+# Example:
+#   software::install fish git
+#--------------------------------------------------
+software::install() {
+    local -i exit_status
+    local -i failure
+    local name
+    local -a staged_software
+
+    if (($# == 0))
+    then
+        output::log 'No software selected; nothing to set up.'
+
+        return 0
+    fi
+
+    exit_status=0
+
+    # Phase 1: collect every piece's inputs up front (the only interactive software
+    # step), so the install phase that follows runs unattended.
+    staged_software=()
+    output::log 'Collecting inputs for the selected software...'
+    for name in "$@"
+    do
+        if software::run "$name" step-install-inputs
+        then
+            staged_software+=("$name")
+        else
+            failure=$?
+            ((failure <= exit_status)) || exit_status=$failure
+        fi
+    done
+
+    # Refresh the host package manager once, now that every input is collected and
+    # before any piece installs, so each installs against up-to-date package lists
+    # and an upgraded base system. Skipped when every piece was dropped; a failure is
+    # recorded but does not abandon the run, like every other phase.
+    if ((${#staged_software[@]} > 0))
+    then
+        if software::update_package_manager
+        then
+            : # Refreshed.
+        else
+            failure=$?
+            ((failure <= exit_status)) || exit_status=$failure
+        fi
+    fi
+
+    # Phase 2: install and configure every survivor as one step (it records ownership
+    # on success); a failure does not abandon the rest. Skipped, with no header, when
+    # nothing survived phase 1.
+    if ((${#staged_software[@]} > 0))
+    then
+        output::log 'Installing and configuring the selected software...'
+        for name in "${staged_software[@]}"
+        do
+            if software::run "$name" step-install
+            then
+                : # Installed and configured.
+            else
+                failure=$?
+                ((failure <= exit_status)) || exit_status=$failure
+            fi
+        done
+    fi
+
+    return "$exit_status"
+}
+[[ -v TEST_FLAG ]] || readonly -f software::install
+
+#--------------------------------------------------
+# Function:
+#   software::uninstall <name>...
+#
+# Description:
+#   Reverses each named piece of software, staged like the install flow so the run
+#   goes unattended after the prompts: phase 1 runs step-uninstall-inputs for every
+#   piece (warm sudo, resolve the instance) and keeps the ones that succeed; phase 2
+#   runs step-uninstall for each survivor, which unconfigures then uninstalls the
+#   piece as one step and clears ownership. The provisioners own no checkout and have
+#   nothing to remove, so removal covers software only and they are never handled
+#   here. A failing piece does not abandon the rest: the loop continues and the worst
+#   exit status seen across the phases is returned. Skips with a message when no
+#   software is given. Writes progress to stderr; each piece's own output is left
+#   untouched, with whatever side effects removing it entails.
+#
+# Arguments:
+#   <name>...  Zero or more software names to reverse
+#
+# Returns:
+#   0 when every piece was reversed or no software was given
+#   N the worst exit status seen across the software
+#
+# Example:
+#   software::uninstall discord git
+#--------------------------------------------------
+software::uninstall() {
+    local -i exit_status
+    local -i failure
+    local name
+    local -a staged_remove
+
+    if (($# == 0))
+    then
+        output::log 'No software to remove.'
+
+        return 0
+    fi
+
+    exit_status=0
+
+    # Phase 1: collect every piece's inputs up front (warm sudo, resolve the
+    # instance), the only interactive step, so the removal phase runs unattended. A
+    # piece whose inputs fail is dropped from the removal phase.
+    staged_remove=()
+    output::log 'Collecting inputs for the software to remove...'
+    for name in "$@"
+    do
+        if software::run "$name" step-uninstall-inputs
+        then
+            staged_remove+=("$name")
+        else
+            failure=$?
+            ((failure <= exit_status)) || exit_status=$failure
+        fi
+    done
+
+    # Phase 2: unconfigure and uninstall every survivor as one step (it clears
+    # ownership); a failure does not abandon the rest. Skipped, with no header, when
+    # nothing survived phase 1.
+    if ((${#staged_remove[@]} > 0))
+    then
+        output::log 'Removing the software...'
+        for name in "${staged_remove[@]}"
+        do
+            if software::run "$name" step-uninstall
+            then
+                : # Removed cleanly.
+            else
+                failure=$?
+                ((failure <= exit_status)) || exit_status=$failure
+            fi
+        done
+    fi
+
+    return "$exit_status"
+}
+[[ -v TEST_FLAG ]] || readonly -f software::uninstall
+
 # ─── Constants / globals ────────────────────────────────────────────────────────
 
 # This library's own directory, so the sibling libraries are sourced regardless of
