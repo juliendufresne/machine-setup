@@ -180,20 +180,6 @@ Describe 'lib/menu.sh'
             The stderr should be blank
         End
 
-        It 'draws the sticky header and help line into the screen output'
-            SCREEN_OUTPUT="$SHELLSPEC_TMPBASE/menu-screen"
-            : >"$SCREEN_OUTPUT"
-            screen::open 'Set up this machine'
-
-            SCREEN_HELP='Tick the units to set up.'
-            When call wrapper::menu::select '\n' "$(printf '1\tgit\tVCS')" "$(printf '0\tdiscord\tChat')"
-            The status should be success
-            The stdout should equal 'git'
-            The stderr should be blank
-            The contents of file "$SCREEN_OUTPUT" should include 'Set up this machine'
-            The contents of file "$SCREEN_OUTPUT" should include 'Tick the units to set up.'
-        End
-
     End
 
 End

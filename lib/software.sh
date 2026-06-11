@@ -674,13 +674,10 @@ software::install::pick() {
         entries+=("$(printf '%d\t%s\t%s' "$state" "$name" "$description")")
     done
 
-    # Pin a header over the checklist and clear the region under it; the selection
-    # still goes to stdout (captured), while the header and help draw to the tty,
-    # so a captured run is unaffected. Both bracket calls are no-ops with no tty.
-    screen::open 'Set up this machine' 'Tick the software to set up, then confirm to continue.'
-    SCREEN_HELP='Space toggles a piece; ticked software is set up or updated.' \
+    # Print a prompt over the checklist; the selection still goes to stdout
+    # (captured) while the prompt draws to the tty, so a captured run is unaffected.
+    MENU_PROMPT='Set up this machine: tick the software to set up, then confirm. Arrows or j/k move, space toggles, Enter confirms.' \
         menu::select "${entries[@]}"
-    screen::close
 }
 [[ -v TEST_FLAG ]] || readonly -f software::install::pick
 
@@ -747,14 +744,11 @@ software::uninstall::pick() {
 
     ((${#entries[@]} > 0)) || return 0
 
-    # Pin a header over the removal checklist and clear the region under it; the
-    # selection still goes to stdout (captured) while the header and help draw to
-    # the tty. Both bracket calls are no-ops with no tty.
-    screen::open 'Remove installed software' 'Tick any installed software to uninstall and unconfigure it.'
-    MENU_PROMPT='Select installed software to UNINSTALL and unconfigure. Arrows or j/k move, space toggles, Enter confirms.' \
-        SCREEN_HELP='Nothing is removed unless you tick it; ticking reverses the software.' \
+    # Print a prompt over the removal checklist; the selection still goes to
+    # stdout (captured) while the prompt draws to the tty. Nothing is removed
+    # unless the user ticks it.
+    MENU_PROMPT='Remove installed software: tick any to UNINSTALL and unconfigure it (nothing is removed unless ticked). Arrows or j/k move, space toggles, Enter confirms.' \
         menu::select "${entries[@]}"
-    screen::close
 }
 [[ -v TEST_FLAG ]] || readonly -f software::uninstall::pick
 
@@ -792,5 +786,3 @@ source "$LIB_DIR/output.sh"
 source "$LIB_DIR/state.sh"
 # shellcheck source=lib/menu.sh
 source "$LIB_DIR/menu.sh"
-# shellcheck source=lib/screen.sh
-source "$LIB_DIR/screen.sh"

@@ -124,23 +124,6 @@ Describe 'lib/state.sh'
             The contents of file "$XDG_STATE_HOME/machine-setup/inputs/git.name" should equal 'Ada'
         End
 
-        It 'draws the sticky header and help line into the screen output'
-            SCREEN_OUTPUT="$SHELLSPEC_TMPBASE/state-screen"
-            : >"$SCREEN_OUTPUT"
-            screen::open 'Dotfiles setup'
-
-            GIT_NAME=''
-            Data 'Ada'
-            SCREEN_HELP='The git author name.'
-            When call state::ask git.name 'Your git name'
-            The status should be success
-            The stdout should be blank
-            The stderr should be blank
-            The contents of file "$XDG_STATE_HOME/machine-setup/inputs/git.name" should equal 'Ada'
-            The contents of file "$SCREEN_OUTPUT" should include 'Dotfiles setup'
-            The contents of file "$SCREEN_OUTPUT" should include 'The git author name.'
-        End
-
         It 'writes a freshly resolved value to the working overlay during a session'
             helper::overlay git
 

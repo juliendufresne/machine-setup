@@ -164,9 +164,7 @@ state::_put() {
 # Description:
 #   Resolves an input once and saves it: reuse a saved value, else take it from
 #   the environment, else prompt on the terminal. Reuse-first keeps repeated
-#   configuration idempotent. When a sticky-header screen is open it first clears
-#   the region and prints the SCREEN_HELP help line to SCREEN_OUTPUT before
-#   prompting (a no-op otherwise). May read from stdin and writes the input file.
+#   configuration idempotent. May read from stdin and writes the input file.
 #
 # Arguments:
 #   <name>    The input name
@@ -201,11 +199,6 @@ state::ask() {
     then
         value="${!env_name}"
     else
-        # Clear the region under any open sticky header and draw this input's help
-        # line, then prompt. Both are no-ops when no screen is open.
-        screen::region
-        screen::help
-
         read -r -p "$prompt: " value
     fi
 
@@ -768,18 +761,3 @@ state::contains_only_created() {
     done < <(find "$root" -mindepth 1)
 }
 [[ -v TEST_FLAG ]] || readonly -f state::contains_only_created
-
-# ─── Constants / globals ────────────────────────────────────────────────────────
-
-# This library's own directory, so the sibling library is sourced regardless of
-# the caller's working directory. Defined only when not already set, and made
-# readonly outside tests so specs can reassign it.
-if [[ -z "${LIB_DIR:-}" ]]
-then
-    LIB_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-    [[ -v TEST_FLAG ]] || readonly LIB_DIR
-fi
-
-# ─── Imports ──────────────────────────────────────────────────────────────────
-# shellcheck source=lib/screen.sh
-source "$LIB_DIR/screen.sh"
