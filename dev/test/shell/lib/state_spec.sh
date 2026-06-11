@@ -390,4 +390,75 @@ Describe 'lib/state.sh'
 
     End
 
+    # ==========================================================================
+    # state::commit_line_append
+    # ==========================================================================
+    Describe 'state::commit_line_append'
+
+        It 'creates the committed list with the entry'
+            When call state::commit_line_append workspace.list Personal
+            The status should be success
+            The stdout should be blank
+            The stderr should be blank
+            The contents of file "$XDG_STATE_HOME/machine-setup/inputs/workspace.list" should equal 'Personal'
+        End
+
+        It 'appends a second entry on a newline without a trailing newline'
+            state::commit_line_append workspace.list Personal
+
+            When call state::commit_line_append workspace.list Acme
+            The status should be success
+            The stdout should be blank
+            The stderr should be blank
+            The contents of file "$XDG_STATE_HOME/machine-setup/inputs/workspace.list" should equal "$(printf 'Personal\nAcme')"
+        End
+
+        It 'does not duplicate an entry already present'
+            state::commit_line_append workspace.list Personal
+
+            When call state::commit_line_append workspace.list Personal
+            The status should be success
+            The stdout should be blank
+            The stderr should be blank
+            The contents of file "$XDG_STATE_HOME/machine-setup/inputs/workspace.list" should equal 'Personal'
+        End
+
+    End
+
+    # ==========================================================================
+    # state::commit_line_remove
+    # ==========================================================================
+    Describe 'state::commit_line_remove'
+
+        It 'removes the entry and keeps the rest in order'
+            state::commit_line_append workspace.list Personal
+            state::commit_line_append workspace.list Acme
+            state::commit_line_append workspace.list Work
+
+            When call state::commit_line_remove workspace.list Acme
+            The status should be success
+            The stdout should be blank
+            The stderr should be blank
+            The contents of file "$XDG_STATE_HOME/machine-setup/inputs/workspace.list" should equal "$(printf 'Personal\nWork')"
+        End
+
+        It 'removes the list file when the last entry is removed'
+            state::commit_line_append workspace.list Personal
+
+            When call state::commit_line_remove workspace.list Personal
+            The status should be success
+            The stdout should be blank
+            The stderr should be blank
+            The path "$XDG_STATE_HOME/machine-setup/inputs/workspace.list" should not be exist
+        End
+
+        It 'is a no-op when the list file is missing'
+            When call state::commit_line_remove workspace.list Personal
+            The status should be success
+            The stdout should be blank
+            The stderr should be blank
+        End
+
+    End
+
 End
