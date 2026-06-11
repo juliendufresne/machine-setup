@@ -101,10 +101,9 @@ menu::read_key() {
 #   interaction and emits the pre-selected entries as-is, so a selection still
 #   resolves. The header line printed above the checklist is MENU_PROMPT,
 #   defaulting to the set-up wording, so a caller (such as the uninstall menu)
-#   can make clear what toggling an entry on will do. When a sticky-header screen
-#   is open it first clears the region and prints the SCREEN_HELP help line to
-#   SCREEN_OUTPUT (a no-op otherwise). Draws the checklist to MENU_OUTPUT and
-#   consumes keystrokes from MENU_INPUT; stdout carries only the result.
+#   can make clear what toggling an entry on will do. Draws the checklist to
+#   MENU_OUTPUT and consumes keystrokes from MENU_INPUT; stdout carries only the
+#   result.
 #
 # Arguments:
 #   <entry>...  Zero or more '<state>\t<name>\t<description>' triples
@@ -164,12 +163,6 @@ menu::select() {
 
     if [[ -n "$interactive" ]]
     then
-        # Clear the region under any open sticky header and draw the help line
-        # once, before the list and its redraw loop, so navigation does not
-        # flicker them. Both are no-ops when no screen is open.
-        screen::region
-        screen::help
-
         prompt="${MENU_PROMPT:-Select units to set up. Arrows or j/k move, space toggles, Enter confirms.}"
         printf '%s\n' "$prompt" >"$output"
 
@@ -223,18 +216,3 @@ menu::select() {
     done
 }
 [[ -v TEST_FLAG ]] || readonly -f menu::select
-
-# ─── Constants / globals ────────────────────────────────────────────────────────
-
-# This library's own directory, so the sibling library is sourced regardless of
-# the caller's working directory. Defined only when not already set, and made
-# readonly outside tests so specs can reassign it.
-if [[ -z "${LIB_DIR:-}" ]]
-then
-    LIB_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-    [[ -v TEST_FLAG ]] || readonly LIB_DIR
-fi
-
-# ─── Imports ──────────────────────────────────────────────────────────────────
-# shellcheck source=lib/screen.sh
-source "$LIB_DIR/screen.sh"

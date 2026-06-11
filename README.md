@@ -64,7 +64,7 @@ bin/enable-push
 In place so far:
 
 - the shared library under `lib/` (runner, OS detection, host probing, sudo,
-  state store, session, the checkbox menu, the sticky-header screen, logging),
+  state store, session, the checkbox menu, logging),
 - the `bin/machine-setup` orchestrator and the `install.sh` bootstrap,
 - 19 pieces of software targeting Ubuntu 26.04, each its own
   `libexec/ubuntu_26.04/software/<name>.sh`: 12 command-line tools (`claude`,
