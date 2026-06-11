@@ -105,6 +105,72 @@ screen::open() {
 
 #--------------------------------------------------
 # Function:
+#   screen::region
+#
+# Description:
+#   Clears the region under the sticky header, ready for the next input, and is the
+#   first thing each interactive primitive calls. A no-op unless a screen is open
+#   (SCREEN_ACTIVE), so a plain call site is unaffected. When active it homes the
+#   cursor, reprints the header, then clears from the cursor to the end of the
+#   screen, leaving the cursor in a fresh region below the header. Draws to
+#   SCREEN_OUTPUT.
+#
+# Arguments:
+#   N/A
+#
+# Returns:
+#   0 on success
+#
+# Example:
+#   screen::region
+#--------------------------------------------------
+screen::region() {
+    local output
+
+    [[ -n "${SCREEN_ACTIVE:-}" ]] || return 0
+
+    output="${SCREEN_OUTPUT:-/dev/tty}"
+
+    printf '%b%s%b' '\033[H' "$SCREEN_HEADER" '\033[0J' >>"$output"
+}
+[[ -v TEST_FLAG ]] || readonly -f screen::region
+
+#--------------------------------------------------
+# Function:
+#   screen::help
+#
+# Description:
+#   Prints the per-input help line into the region, the companion to
+#   screen::region that each primitive calls right after clearing the region. A
+#   no-op unless a screen is open (SCREEN_ACTIVE) and SCREEN_HELP is set, so a
+#   plain call site - where SCREEN_HELP is unset - draws nothing. The help text and
+#   a trailing blank line go to SCREEN_OUTPUT, leaving the cursor below them for the
+#   prompt the primitive then draws. SCREEN_HELP is passed per input as a
+#   command-prefix variable, the same convention as MENU_PROMPT.
+#
+# Arguments:
+#   N/A
+#
+# Returns:
+#   0 on success
+#
+# Example:
+#   SCREEN_HELP='Where your repositories live.' state::ask workspace.path '...'
+#--------------------------------------------------
+screen::help() {
+    local output
+
+    [[ -n "${SCREEN_ACTIVE:-}" ]] || return 0
+    [[ -n "${SCREEN_HELP:-}" ]] || return 0
+
+    output="${SCREEN_OUTPUT:-/dev/tty}"
+
+    printf '%s\n\n' "$SCREEN_HELP" >>"$output"
+}
+[[ -v TEST_FLAG ]] || readonly -f screen::help
+
+#--------------------------------------------------
+# Function:
 #   screen::close
 #
 # Description:
