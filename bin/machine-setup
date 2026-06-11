@@ -8,22 +8,21 @@ set -euo pipefail
 # three phases: collect every piece's inputs, refresh the host package manager,
 # install and configure each piece. After the software it runs the post-install
 # provisioners (the workspace and the dotfiles): a fixed pair, not software but
-# personal configuration the toolkit applies last, driven in-process through the
-# framework (lib/provisioner.sh) rather than from any executable of their own. They
-# are never discovered or listed beside the software; the interactive flow offers them
-# their own toggle menu after the install, and provisions the ones left ticked. A
-# provisioner gathers its one input when it runs (so the installer location is asked
-# right before it runs) and fetches and runs the repository's installer script, last,
-# on top of the freshly installed tools; that script downloads the repository and lays
-# it down on its own. There is no ordering between software pieces; the provisioners
-# run in a fixed order (the workspace before the dotfiles). A named, unattended run
+# personal configuration the toolkit applies last, run as a subprocess through the
+# OS-agnostic libexec/provisioner.sh (a user can run that script on its own too). They
+# are never discovered or listed beside the software; the interactive flow asks about
+# each one with a [Y/n] confirm after the install and runs the confirmed ones. A
+# provisioner fetches and runs the repository's fixed installer script, last, on top
+# of the freshly installed tools; that script downloads the repository and lays it
+# down on its own. There is no ordering between software pieces; the provisioners run
+# in a fixed order (the workspace before the dotfiles). A named, unattended run
 # installs exactly the named software and never touches the provisioners. Removal is a
 # separate action (uninstall) and covers software only: it stages the same way (collect
 # inputs, then unconfigure and uninstall); the provisioners own no checkout and have
 # nothing to remove.
 #
 # This file is the flow only: the software mechanics and menus live in lib/software.sh
-# and the provisioner menu and run in lib/provisioner.sh.
+# and the provisioner confirm and run in libexec/provisioner.sh.
 
 # ─── Functions ────────────────────────────────────────────────────────────────
 
@@ -55,14 +54,14 @@ separate, explicit action: uninstall.
 
 With no names, install opens an interactive checklist of the software this host can
 run (pre-ticked from a previous run, or every available piece on a first run) for you
-to adjust; after the install it offers a second toggle menu for the workspace and
-dotfiles provisioners (both ticked) and runs the ones you leave ticked. uninstall with
-no names opens a checklist of the installed software, every entry unticked and labelled
-with its current status, for you to pick what to remove. Given one or more names either
-action skips the menus and acts on exactly that software, for an unattended run; a
-named install never touches the provisioners. With no terminal the menus fall back to
-their ticked sets (install to its pre-ticked software then both provisioners, uninstall
-to nothing).
+to adjust; after the install it asks, one at a time, whether to create the workspace
+and whether to install the dotfiles ([Y/n], default yes) and runs the ones you
+confirm. uninstall with no names opens a checklist of the installed software, every
+entry unticked and labelled with its current status, for you to pick what to remove.
+Given one or more names either action skips the menus and acts on exactly that
+software, for an unattended run; a named install never touches the provisioners. With
+no terminal the menus and confirms fall back to their defaults (install to its
+pre-ticked software then both provisioners, uninstall to nothing).
 
   machine-setup                 Choose software interactively, set it up, then provision.
   machine-setup tree git        Set up the named software unattended (no provisioners).
@@ -79,17 +78,15 @@ it: they are a fixed post-install step of the interactive flow that fetches a
 self-contained installer script and runs it, last, so the personal configuration
 lands on top of the freshly installed tools; the script downloads its repository and
 lays it down on its own. They own no executable and run only through this flow, never
-a named run. A provisioner asks for its one input when it runs, not up front: where
-the installer comes from (blank keeps the default), either an URL fetched to a
-temporary file and run (with wget or curl) or a path to a local executable. The
-earlier identity toolkit (SSH/GPG keygen, gitconfig wiring, the secret store) now
-lives in those external repos.
+a named run. The flow asks about each with a [Y/n] confirm (default yes) and fetches
+the fixed installer to a temporary file and runs it (with wget or curl); the installer
+URL is locked and not overridable, since an arbitrary URL's behaviour is unknown and
+the side installers can be run by hand afterwards. The earlier identity toolkit
+(SSH/GPG keygen, gitconfig wiring, the secret store) now lives in those external repos.
 
 Environment:
   MACHINE_SETUP_LIBEXEC_DIR  Directory holding the per-OS software executables (default: ../libexec).
   MACHINE_SETUP_SHARE_DIR    Directory holding share/machine-setup/<name>/description.
-  WORKSPACE_INSTALLER        Installer the workspace fetches and runs (the workspace provisioner input).
-  DOTFILES_INSTALLER         Installer the dotfiles fetch and run (the dotfiles provisioner input).
   XDG_STATE_HOME             Where the state store (managed markers, inputs) lives.
   <NAME>_<INPUT>             Pre-set a software input to keep the run unattended.
 EOF
@@ -102,16 +99,16 @@ EOF
 #
 # Description:
 #   Runs the full set-up end to end. With no names it resolves the software
-#   interactively (software::install::pick), installs it (software::install), then offers the
-#   post-install provisioner toggle menu (provisioner::choose, both ticked) and runs
-#   the ones left ticked (provisioner::provision_all). With one or more names it
+#   interactively (software::install::pick), installs it (software::install), then runs
+#   the post-install provisioners by executing libexec/provisioner.sh, which asks about
+#   each with a [Y/n] confirm and runs the confirmed ones. With one or more names it
 #   installs exactly that software, unattended, and never touches the provisioners; a
 #   provisioner name is not software and resolves to no software file, so it fails like
 #   any other unknown name. Each selection is gathered before its phase acts.
 #   Deselecting a piece never removes it: removal is a separate, explicit action
-#   (uninstall). Carries every side effect of the set-up (the menus, prompting for
-#   inputs, installing and configuring the software, then running the provisioners).
-#   The worst status across the install and the provisioning is returned.
+#   (uninstall). Carries every side effect of the set-up (the menu, prompting for
+#   inputs, installing and configuring the software, then confirming and running the
+#   provisioners). The worst status across the install and the provisioning is returned.
 #
 # Arguments:
 #   [name]...  Zero or more software names; none triggers the interactive flow
@@ -155,18 +152,13 @@ machine_setup::install() {
         status=0
         software::install "${selected[@]}" || status=$?
 
-        # The post-install step: offer the provisioner toggle menu (both ticked),
-        # then run the ones left ticked, last, on top of the freshly installed tools.
-        selection="$(provisioner::choose)"
-        selected=()
-        [[ -z "$selection" ]] || mapfile -t selected <<<"$selection"
-
-        if ((${#selected[@]} > 0))
-        then
-            failure=0
-            provisioner::provision_all "${selected[@]}" || failure=$?
-            ((failure <= status)) || status=$failure
-        fi
+        # The post-install step: run the provisioner executable as a subprocess. It
+        # asks about each provisioner with a [Y/n] confirm and runs the confirmed ones,
+        # last, on top of the freshly installed tools. The same OS-agnostic libexec
+        # script a user can run on its own.
+        failure=0
+        "$LIBEXEC_DIR/provisioner.sh" || failure=$?
+        ((failure <= status)) || status=$failure
     fi
 
     # Close the session (clearing the working area) on the way out, whichever path
@@ -292,8 +284,6 @@ ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 [[ -v TEST_FLAG ]] || readonly ROOT
 
 # ─── Imports ──────────────────────────────────────────────────────────────────
-# shellcheck source=lib/provisioner.sh
-source "$ROOT/lib/provisioner.sh"
 # shellcheck source=lib/session.sh
 source "$ROOT/lib/session.sh"
 # shellcheck source=lib/software.sh
