@@ -45,6 +45,20 @@ The bootstrap itself understands `--repository <url>` and `--directory <path>`
 (or the `MACHINE_SETUP_REPOSITORY` / `MACHINE_SETUP_DIR` environment variables);
 every other argument is forwarded unchanged.
 
+## Pushing your own commits
+
+`install.sh` clones over HTTPS so the bootstrap needs no key, which leaves the
+checkout unable to push and producing unattributed, unsigned commits. To work on
+this repository from such a checkout, run [`bin/enable-push`](bin/enable-push):
+it switches the origin remote to an SSH host from your `~/.ssh/config`, points
+the repository at an existing GPG key for signing, and sets the committer
+identity. Everything it writes goes into this checkout's local git config only -
+it never touches your global git config.
+
+```sh
+bin/enable-push
+```
+
 ## Status
 
 In place so far:
