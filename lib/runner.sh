@@ -74,6 +74,46 @@ runner::unit_name() {
 
 #--------------------------------------------------
 # Function:
+#   runner::_open_session <action>
+#
+# Description:
+#   Opens the execution session for an action that collects or consumes inputs
+#   (every action but the read-only status). It begins the session, or
+#   joins the one the orchestrator already owns (session::begin), and points this
+#   unit's inputs overlay at its working area under the session
+#   (execution-in-progress/<unit>/inputs), so state::set/ask write there until the
+#   action commits them. A standalone unit run thus owns its own session; an
+#   orchestrated step inherits the run's. Exports MACHINE_SETUP_INPUTS_WORKING and
+#   creates the working directory.
+#
+# Arguments:
+#   <action>  The action about to run
+#
+# Returns:
+#   0 when the session is open (or the action needs none)
+#   the status session::begin returns when the user declined a leftover session
+#
+# Example:
+#   runner::_open_session install
+#--------------------------------------------------
+runner::_open_session() {
+    case "$1" in
+        install | uninstall | step-install-inputs | step-install | step-uninstall-inputs | step-uninstall)
+            session::begin || return $?
+
+            if session::active
+            then
+                MACHINE_SETUP_INPUTS_WORKING="$(session::dir)/$(state::_key "$(runner::unit_name)")/inputs"
+                export MACHINE_SETUP_INPUTS_WORKING
+                mkdir -p "$MACHINE_SETUP_INPUTS_WORKING"
+            fi
+            ;;
+    esac
+}
+[[ -v TEST_FLAG ]] || readonly -f runner::_open_session
+
+#--------------------------------------------------
+# Function:
 #   runner::id
 #
 # Description:
@@ -160,6 +200,181 @@ runner::status() {
 }
 [[ -v TEST_FLAG ]] || readonly -f runner::status
 
+#--------------------------------------------------
+# Function:
+#   runner::run [<action>]
+#
+# Description:
+#   Public entry point a unit's main calls. Routes an action to the unit::*
+#   contract. install checks requirements and refuses software already present by
+#   other means (present, not ours, not previously owned), then runs
+#   request_inputs, install, and configure, and records ownership only once they
+#   succeed; uninstall runs request_inputs, unconfigure, uninstall, clears
+#   ownership, then warns (without failing) if the software is still present
+#   because another install of it exists; status prints the status word. install
+#   and uninstall open one stage naming the action (output::stage), then run their
+#   hooks; each hook describes its own commands through output::run, so the user
+#   sees what is happening, not the commands' chatter. A hook that fails has
+#   already shown its command's trace, and the `|| return $?` chain stops the run
+#   at that point and propagates the status. The unit's Execute guard already
+#   ensures this runs only on direct execution, never when the unit is sourced
+#   (for example Included by a spec), so no test guard is needed here. Writes the
+#   stage header to stdout and the failing action's status to its caller.
+#
+# The composite install/uninstall run their steps atomically per unit. So the
+# orchestrator can stage them across many units - collecting every unit's inputs up
+# front, then doing the real work unattended - each composite is also exposed as a
+# pair of staged steps. Install: step-install-inputs applies the same guards as the
+# composite install (requirements met, not a foreign install) and collects inputs,
+# failing when the unit cannot or must not be installed so the orchestrator drops
+# it; step-install then opens the stage and runs unit::install then unit::configure
+# as one step, recording ownership once both succeed, exactly as the composite
+# install does. step-install assumes step-install-inputs already filtered out
+# unavailable or foreign units, so it does not re-check. Uninstall mirrors this:
+# step-uninstall-inputs collects inputs (warm sudo, resolve the instance) with no
+# guards, since uninstall is unconditional; step-uninstall then opens the stage and
+# runs unit::unconfigure then unit::uninstall, clearing ownership, exactly as the
+# composite uninstall does.
+#
+# Ownership, configuration, and manifests are recorded under runner::id, so an
+# instanceable unit tracks each instance separately. The id is resolved after
+# inputs are collected (install and the staged steps), since an instance key may
+# itself come from an input.
+#
+# Arguments:
+#   <action>  install (default), uninstall, status, or one of the
+#             staged steps step-install-inputs, step-install, step-uninstall-inputs,
+#             step-uninstall
+#
+# Returns:
+#   0 on success
+#   1 when requirements are not met, or the software is present by other means
+#   2 on an unknown action
+#   the exit status a contract step propagates
+#
+# Example:
+#   runner::run install
+#--------------------------------------------------
+runner::run() {
+    local action
+    local name
+
+    action="${1:-install}"
+
+    runner::_open_session "$action" || return $?
+
+    case "$action" in
+        install)
+            if ! unit::is_available
+            then
+                output::fatal 'requirements not met'
+
+                return 1
+            fi
+
+            name="$(runner::unit_name)"
+
+            # Refuse to adopt software that is present but arrived some other way
+            # than our mechanism (a source build, a different package). We only
+            # manage what we installed; taking it over would let a later uninstall
+            # remove something we did not put there. Already ours, or already owned
+            # from a prior run, is fine - install is an idempotent update.
+            if ! state::owned "$name" && unit::is_installed && ! unit::is_managed
+            then
+                output::fatal "$name is already installed by other means"
+
+                return 1
+            fi
+
+            output::stage "Installing $name"           # stage header for the action
+            unit::request_inputs                       # step 1: collect inputs
+            unit::install || return $?                 # step 2: install-or-update
+            unit::configure || return $?               # step 3: idempotent config
+            state::own "$(runner::id)"                 # we manage this instance now
+            session::end                               # run finished; drop the lock
+            ;;
+        uninstall)
+            name="$(runner::unit_name)"
+            output::stage "Uninstalling $name"         # stage header for the action
+            unit::request_inputs                       # step 1: sudo warmup, resolve instance
+            unit::unconfigure || return $?             # step 2: restore config
+            unit::uninstall || return $?               # step 3: remove
+            state::disown "$(runner::id)"
+
+            # Our copy is gone; if git still resolves, another install of it
+            # exists that we did not place and must not touch. Flag it, do not fail.
+            ! unit::is_installed || output::warn "$name is still present; it may be installed by other means"
+            session::end                               # run finished; drop the lock
+            ;;
+        step-install-inputs)
+            # Staged install, step 1: the same guards the composite install applies
+            # (requirements met, and not a foreign install we must not adopt), then
+            # collect inputs. A non-zero return drops the unit from the install
+            # stage, so it runs unattended over the survivors.
+            if ! unit::is_available
+            then
+                output::fatal 'requirements not met'
+
+                return 1
+            fi
+
+            name="$(runner::unit_name)"
+
+            if ! state::owned "$name" && unit::is_installed && ! unit::is_managed
+            then
+                output::fatal "$name is already installed by other means"
+
+                return 1
+            fi
+
+            unit::request_inputs                       # collect inputs / warm sudo
+            ;;
+        step-install)
+            # Staged install, step 2: install then configure as one per-unit step,
+            # under the action's stage header, recording ownership once both succeed
+            # - exactly what the composite install does, minus the guards
+            # step-install-inputs already applied. The orchestrator only reaches here
+            # for a unit step-install-inputs let through, so the guards are not repeated.
+            name="$(runner::unit_name)"
+            output::stage "Installing $name"           # stage header for the action
+            unit::install || return $?                 # step 1: install-or-update
+            unit::configure || return $?               # step 2: idempotent config
+            state::own "$(runner::id)"                 # we manage this instance now
+            ;;
+        step-uninstall-inputs)
+            # Staged uninstall, step 1: collect inputs (warm sudo, resolve the
+            # instance) up front, so the removal stage that follows runs unattended.
+            # Uninstall is unconditional, so unlike step-install-inputs there are no
+            # availability or foreign-install guards to apply.
+            unit::request_inputs                       # collect inputs / warm sudo
+            ;;
+        step-uninstall)
+            # Staged uninstall, step 2: unconfigure then uninstall as one per-unit
+            # step, under the action's stage header, clearing ownership - exactly
+            # what the composite uninstall does, minus the inputs
+            # step-uninstall-inputs already collected.
+            name="$(runner::unit_name)"
+            output::stage "Uninstalling $name"         # stage header for the action
+            unit::unconfigure || return $?             # step 1: restore config
+            unit::uninstall || return $?               # step 2: remove
+            state::disown "$(runner::id)"
+
+            # Our copy is gone; if it still resolves, another install of it exists
+            # that we did not place and must not touch. Flag it, do not fail.
+            ! unit::is_installed || output::warn "$name is still present; it may be installed by other means"
+            ;;
+        status)
+            runner::status                             # the status word
+            ;;
+        *)
+            output::fatal "unknown action: $action"
+
+            return 2
+            ;;
+    esac
+}
+[[ -v TEST_FLAG ]] || readonly -f runner::run
+
 # ─── Default contract ─────────────────────────────────────────────────────────
 # The configuration part of the unit::* contract, defaulted to no-ops. Most units
 # install software that needs no configuration of ours, so they ship no config
@@ -194,6 +409,58 @@ then
         true
     }
     [[ -v TEST_FLAG ]] || readonly -f unit::is_configured
+fi
+
+#--------------------------------------------------
+# Function:
+#   unit::configure
+#
+# Description:
+#   Default no-op for a unit with nothing to configure. A unit that configures
+#   something overrides this in its `configure` file. Writes nothing. Defined only
+#   when the unit has not already supplied its own.
+#
+# Arguments:
+#   N/A
+#
+# Returns:
+#   0 on success
+#
+# Example:
+#   unit::configure
+#--------------------------------------------------
+if ! declare -F unit::configure &>/dev/null
+then
+    unit::configure() {
+        :
+    }
+    [[ -v TEST_FLAG ]] || readonly -f unit::configure
+fi
+
+#--------------------------------------------------
+# Function:
+#   unit::unconfigure
+#
+# Description:
+#   Default no-op for a unit with no configuration to restore. A unit that
+#   configures something overrides this in its `configure` file. Writes nothing.
+#   Defined only when the unit has not already supplied its own.
+#
+# Arguments:
+#   N/A
+#
+# Returns:
+#   0 on success
+#
+# Example:
+#   unit::unconfigure
+#--------------------------------------------------
+if ! declare -F unit::unconfigure &>/dev/null
+then
+    unit::unconfigure() {
+        :
+    }
+    [[ -v TEST_FLAG ]] || readonly -f unit::unconfigure
 fi
 
 #--------------------------------------------------
