@@ -301,4 +301,210 @@ Describe 'lib/software.sh'
 
     End
 
+    # ==========================================================================
+    # software::update_package_manager
+    # ==========================================================================
+    Describe 'software::update_package_manager'
+
+        output::log() { :; }
+        # Fix the OS token so the refresh resolves a known system-upgrade script.
+        os::file_token() { printf 'ubuntu_26.04'; }
+
+        setup_libexec() {
+            LIBEXEC_DIR="$SHELLSPEC_TMPBASE/libexec"
+            rm -rf "$LIBEXEC_DIR"
+            mkdir -p "$LIBEXEC_DIR/ubuntu_26.04"
+            printf '#!/usr/bin/env bash\nprintf "system-upgrade\\n"\n' >"$LIBEXEC_DIR/ubuntu_26.04/system-upgrade"
+            chmod +x "$LIBEXEC_DIR/ubuntu_26.04/system-upgrade"
+        }
+        BeforeEach 'setup_libexec'
+
+        It 'invokes the host OS token system-upgrade script'
+            When call software::update_package_manager
+            The status should be success
+            The stdout should equal 'system-upgrade'
+            The stderr should be blank
+        End
+
+        It 'announces the refresh on stderr'
+            output::log() { printf 'log %s\n' "$1" >&2; }
+
+            When call software::update_package_manager
+            The status should be success
+            The stdout should equal 'system-upgrade'
+            The stderr should include 'Updating the package manager'
+        End
+
+        It 'propagates the system-upgrade exit status'
+            printf '#!/usr/bin/env bash\nexit 5\n' >"$LIBEXEC_DIR/ubuntu_26.04/system-upgrade"
+            chmod +x "$LIBEXEC_DIR/ubuntu_26.04/system-upgrade"
+
+            When call software::update_package_manager
+            The status should equal 5
+            The stdout should be blank
+            The stderr should be blank
+        End
+
+    End
+
+    # ==========================================================================
+    # software::install
+    # ==========================================================================
+    Describe 'software::install'
+
+        output::log() { :; }
+        software::run() { printf 'run %s %s\n' "$1" "$2"; }
+        # The package-manager refresh has its own block; here it is a no-op so the
+        # staging assertions read only the per-piece calls. A placement test below
+        # makes it emit a marker to pin where it runs.
+        software::update_package_manager() { :; }
+
+        It 'stages software inputs, then install-and-configure, across every piece'
+            When call software::install alpha beta
+            The status should be success
+            The line 1 of stdout should equal 'run alpha step-install-inputs'
+            The line 2 of stdout should equal 'run beta step-install-inputs'
+            The line 3 of stdout should equal 'run alpha step-install'
+            The line 4 of stdout should equal 'run beta step-install'
+            The stderr should be blank
+        End
+
+        It 'refreshes the package manager after the inputs and before any install'
+            # Emit a marker from the refresh so its position is pinned: it must run
+            # after every piece's inputs and before the first install.
+            software::update_package_manager() { printf 'refresh\n'; }
+
+            When call software::install alpha beta
+            The status should be success
+            The line 1 of stdout should equal 'run alpha step-install-inputs'
+            The line 2 of stdout should equal 'run beta step-install-inputs'
+            The line 3 of stdout should equal 'refresh'
+            The line 4 of stdout should equal 'run alpha step-install'
+            The line 5 of stdout should equal 'run beta step-install'
+            The stderr should be blank
+        End
+
+        It 'records a failing package-manager refresh in the worst status and still installs'
+            software::update_package_manager() { return 6; }
+
+            When call software::install alpha
+            The status should equal 6
+            The stdout should include 'run alpha step-install'
+            The stderr should be blank
+        End
+
+        It 'drops a piece from the install phase when its inputs step fails'
+            software::run() {
+                [[ "$1" == broken && "$2" == step-install-inputs ]] && return 1
+
+                printf 'run %s %s\n' "$1" "$2"
+            }
+
+            When call software::install ok broken
+            The status should equal 1
+            The line 1 of stdout should equal 'run ok step-install-inputs'
+            The line 2 of stdout should equal 'run ok step-install'
+            The stdout should not include 'run broken step-install'
+            The stderr should be blank
+        End
+
+        It 'skips the package-manager refresh and install phase when every piece is dropped'
+            software::update_package_manager() { printf 'refresh\n'; }
+            software::run() {
+                printf 'run %s %s\n' "$1" "$2"
+                [[ "$2" == step-install-inputs ]] && return 1
+
+                return 0
+            }
+
+            When call software::install alpha
+            The status should equal 1
+            The stdout should equal 'run alpha step-install-inputs'
+            The stdout should not include 'refresh'
+            The stderr should be blank
+        End
+
+        It 'continues past a failing install-and-configure step and returns the worst status across phases'
+            software::run() {
+                [[ "$1" == a && "$2" == step-install-inputs ]] && return 2
+                [[ "$1" == b && "$2" == step-install ]] && return 5
+
+                printf 'run %s %s\n' "$1" "$2"
+            }
+
+            When call software::install a b
+            The status should equal 5
+            The line 1 of stdout should equal 'run b step-install-inputs'
+            The stdout should not include 'run a '
+            The stderr should be blank
+        End
+
+        It 'skips with a message when no software is given'
+            output::log() { printf 'log %s\n' "$1" >&2; }
+
+            When call software::install
+            The status should be success
+            The stdout should be blank
+            The stderr should include 'nothing to set up'
+        End
+
+    End
+
+    # ==========================================================================
+    # software::uninstall
+    # ==========================================================================
+    Describe 'software::uninstall'
+
+        output::log() { :; }
+        software::run() { printf 'run %s %s\n' "$1" "$2"; }
+
+        It 'stages software inputs, then unconfigure-and-uninstall across every piece'
+            When call software::uninstall alpha beta
+            The status should be success
+            The line 1 of stdout should equal 'run alpha step-uninstall-inputs'
+            The line 2 of stdout should equal 'run beta step-uninstall-inputs'
+            The line 3 of stdout should equal 'run alpha step-uninstall'
+            The line 4 of stdout should equal 'run beta step-uninstall'
+            The stderr should be blank
+        End
+
+        It 'drops a piece from removal when its inputs step fails'
+            software::run() {
+                [[ "$1" == broken && "$2" == step-uninstall-inputs ]] && return 1
+
+                printf 'run %s %s\n' "$1" "$2"
+            }
+
+            When call software::uninstall ok broken
+            The status should equal 1
+            The line 1 of stdout should equal 'run ok step-uninstall-inputs'
+            The line 2 of stdout should equal 'run ok step-uninstall'
+            The stdout should not include 'run broken step-uninstall'
+            The stderr should be blank
+        End
+
+        It 'continues past a failing removal and returns the worst status'
+            software::run() {
+                [[ "$1" == broken && "$2" == step-uninstall ]] && return 5
+
+                printf 'run %s %s\n' "$1" "$2"
+            }
+
+            When call software::uninstall ok broken
+            The status should equal 5
+            The stdout should include 'run ok step-uninstall'
+            The stderr should be blank
+        End
+
+        It 'skips with a message when no software is given'
+            output::log() { printf 'log %s\n' "$1" >&2; }
+
+            When call software::uninstall
+            The status should be success
+            The stdout should be blank
+            The stderr should include 'No software to remove'
+        End
+
+    End
+
 End
