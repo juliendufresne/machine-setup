@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# The system upgrade for Ubuntu 26.04: apt-get. Not a lifecycle unit (it has no
+# install/uninstall/status) and not a discoverable software unit (it lives beside
+# the software/ directory, directly under the OS token, so the orchestrator's unit
+# discovery never lists it). The orchestrator runs it once, after the inputs are
+# collected and before any unit installs, so every unit installs against
+# up-to-date package lists and an upgraded base system. The orchestrator resolves
+# the host OS token and invokes this file directly, so it never names apt itself.
+
+# ─── Functions ────────────────────────────────────────────────────────────────
+
+#--------------------------------------------------
+# Function:
+#   system_upgrade::run
+#
+# Description:
+#   Refreshes the host package manager and upgrades the installed packages: warms
+#   the sudo session (the apt-get steps need root, and warming it first keeps the
+#   password prompt out of the captured command output), refreshes the package
+#   lists, then upgrades the installed packages. Each step is announced through
+#   output::run, which shows a spinner and the result and reveals apt-get's output
+#   only when a step fails. Stops at the first failing step and propagates its
+#   status.
+#
+# Arguments:
+#   N/A
+#
+# Returns:
+#   0 on success
+#   the failing step's exit status when sudo or apt-get fails
+#
+# Example:
+#   system_upgrade::run
+#--------------------------------------------------
+system_upgrade::run() {
+    sudo::warmup || return $?
+    output::run 'Updating the package lists' sudo apt-get update -qq || return $?
+    output::run 'Upgrading the installed packages' sudo apt-get upgrade -y
+}
+[[ -v TEST_FLAG ]] || readonly -f system_upgrade::run
+
+# ─── Main ─────────────────────────────────────────────────────────────────────
+
+#--------------------------------------------------
+# Function:
+#   system_upgrade::main
+#
+# Description:
+#   Entry point for direct execution. Refreshes the package manager and upgrades
+#   the installed packages through system_upgrade::run. Takes no action argument:
+#   this is not a lifecycle unit, it has the single job the orchestrator invokes it
+#   for.
+#
+# Arguments:
+#   N/A
+#
+# Returns:
+#   the exit status system_upgrade::run propagates
+#
+# Example:
+#   system_upgrade::main
+#--------------------------------------------------
+system_upgrade::main() {
+    system_upgrade::run
+}
+[[ -v TEST_FLAG ]] || readonly -f system_upgrade::main
+
+# ─── Imports ──────────────────────────────────────────────────────────────────
+# shellcheck source=lib/output.sh
+source "$(dirname "${BASH_SOURCE[0]}")/../../lib/output.sh"
+# shellcheck source=lib/sudo.sh
+source "$(dirname "${BASH_SOURCE[0]}")/../../lib/sudo.sh"
+
+# ─── Execute ──────────────────────────────────────────────────────────────────
+[[ "${BASH_SOURCE[0]}" != "$0" ]] || system_upgrade::main "$@"
