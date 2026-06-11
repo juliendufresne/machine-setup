@@ -24,10 +24,13 @@ Describe 'lib/software.sh'
             printf '#!/usr/bin/env bash\n' >"$LIBEXEC_DIR/ubuntu_26.04/software/git.sh"
             printf '#!/usr/bin/env bash\n' >"$LIBEXEC_DIR/ubuntu_26.04/software/tree.sh"
             : >"$LIBEXEC_DIR/README"
+            # The provisioner executable sits at the libexec root, not under a token's
+            # software/ directory, so discovery must never list it as software.
+            printf '#!/usr/bin/env bash\n' >"$LIBEXEC_DIR/provisioner.sh"
         }
         BeforeEach 'setup_libexec'
 
-        It 'lists the per-OS software only, ignoring other files in libexec'
+        It 'lists the per-OS software only, ignoring the provisioner and other libexec files'
             When call software::discover
             The status should be success
             The stdout should equal "$(printf 'git\ntree')"

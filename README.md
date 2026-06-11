@@ -100,7 +100,7 @@ lib/software.sh                            the software module: discover, run, s
 lib/software/<name>/.../configure          OS-independent config fragments a software script sources (fish, neovim)
 libexec/<os>_<ver>/software/<name>.sh      one piece of software per OS+version, all four verbs inside
 libexec/<os>_<ver>/system-upgrade          refresh the package manager + upgrade packages, not discovered software
-lib/provisioner.sh                         the provisioner framework + menu: fetch and run an installer script (workspace, dotfiles), driven in-process by the orchestrator
+libexec/provisioner.sh                     the provisioner executable: confirm then fetch and run a fixed installer script (workspace, dotfiles), run as a subprocess by the orchestrator or on its own
 share/machine-setup/<name>/description     one-line description, shown in the menu (software and provisioners)
 dev/test/shell/                            shellspec specs, mirroring the source tree
 ```
@@ -138,32 +138,30 @@ then installs and configures each piece. There is no ordering between pieces. Re
 is staged the same way: collect inputs first, then unconfigure and uninstall.
 
 After the software install, the interactive flow runs the post-install provisioners.
-It offers a second toggle menu listing the `workspace` and `dotfiles` provisioners,
-both ticked, and runs the ones you leave ticked, in a fixed order (the workspace before
-the dotfiles), on top of the freshly installed tools. A named, unattended run installs
-exactly the named software and never touches the provisioners; the provisioners run
-only through this interactive post-install step.
+It asks, one at a time and in a fixed order (the workspace before the dotfiles),
+whether to create the workspace and whether to install the dotfiles (a `[Y/n]`
+confirm, default yes), running each confirmed one on top of the freshly installed
+tools. A named, unattended run installs exactly the named software and never touches
+the provisioners; the provisioners run only through this interactive post-install step.
 
-With no terminal (a piped or unattended run) the menus fall back to their ticked sets:
-the install menu to its pre-ticked software, the provisioner menu to both, the removal
-menu to nothing. So `bin/machine-setup <names>` installs exactly that software and never
-removes or provisions anything on its own.
+With no terminal (a piped or unattended run) the menus and confirms fall back to their
+defaults: the install menu to its pre-ticked software, the provisioner confirms to yes
+(both run), the removal menu to nothing. So `bin/machine-setup <names>` installs exactly
+that software and never removes or provisions anything on its own.
 
-The `workspace` and `dotfiles` provisioners share one framework in
-`lib/provisioner.sh`, which the orchestrator drives in-process after loading each
-one's record (its header and default installer): each fetches a self-contained
-installer script and runs it, last, so your personal configuration (`config.fish`,
-`tmux.conf`, the per-tree git/SSH/GPG
-setup, and the like) lands on top of the freshly installed tools; the installer
-downloads its repository and lays it down on its own. A provisioner asks for its one
-input when it runs, not up front, so the question is asked right before the installer
-runs: where the installer comes from (blank keeps the default), either an URL fetched to
-a temporary file and run (with `wget`, or `curl` when wget is absent) or a path to a
-local executable run directly. It downloads to a file and runs it rather than piping
-into `sh`, so the installer keeps stdin on the terminal and can prompt you. Override it
-with `WORKSPACE_INSTALLER` / `DOTFILES_INSTALLER`. Everything those repositories do (key
-generation, `~/.gitconfig` wiring, host aliases) is now their own concern; the original
-toolkit was removed from this tree and stays recoverable in git history.
+The `workspace` and `dotfiles` provisioners share one OS-agnostic executable,
+`libexec/provisioner.sh`, which the orchestrator runs as a subprocess (and which you
+can run on its own to re-apply them): each fetches a self-contained installer script
+and runs it, last, so your personal configuration (`config.fish`, `tmux.conf`, the
+per-tree git/SSH/GPG setup, and the like) lands on top of the freshly installed tools; the
+installer downloads its repository and lays it down on its own. The framework fetches
+the installer to a temporary file and runs it (with `wget`, or `curl` when wget is
+absent) rather than piping into `sh`, so the installer keeps stdin on the terminal and
+can prompt you. The installer URL is locked and not overridable: an arbitrary URL's
+behaviour is unknown, and you can always run those side installers by hand afterwards.
+Everything those repositories do (key generation, `~/.gitconfig` wiring, host aliases)
+is now their own concern; the original toolkit was removed from this tree and stays
+recoverable in git history.
 
 Descriptions shown in the menu live in `share/machine-setup/<name>/description`, one
 plain-text line per name (a missing file just means no description).
@@ -186,13 +184,18 @@ The orchestrator picks the right per-OS file for your host (resolved through
 `lib/software/<name>/.../configure` (the `fish` hand-off block, the `neovim`
 editor alternatives).
 
-The `workspace` and `dotfiles` provisioners are OS-agnostic and own no executable of
-their own: they are the shared framework in `lib/provisioner.sh`, which the
-orchestrator drives in-process after loading each one's record. They are not
-discovered software and never appear in the orchestrator's menus; the interactive
-flow runs them as a fixed post-install step and is the only way to run them.
-Provisioning is the only action: the framework collects the one input, then fetches
-and runs the installer script. There is no removal or status (they own no checkout
+The `workspace` and `dotfiles` provisioners are OS-agnostic and share one executable,
+`libexec/provisioner.sh`, that sits beside the per-OS software but is not discovered
+software and never appears in the orchestrator's menus. The orchestrator runs it as a
+subprocess as a fixed post-install step, and you can run it on its own to (re)apply the
+provisioners:
+
+```sh
+libexec/provisioner.sh    # confirm, then fetch and run each provisioner's installer
+```
+
+Provisioning is the only action: it asks a `[Y/n]` confirm per provisioner, then fetches
+and runs the fixed installer script. There is no removal or status (they own no checkout
 and track no install state).
 
 `install` and `uninstall` open a magenta stage header (`▶ Installing git`) and

@@ -15,7 +15,7 @@ set -euo pipefail
 # before this library, which wins; an instanceable unit defines unit::instance in
 # its own script before sourcing this library. The post-install provisioners (the
 # workspace, the dotfiles) are not software units and do not use this runner; they
-# run on lib/provisioner.sh. Sourced by
+# are the separate libexec/provisioner.sh executable. Sourced by
 # unit scripts; re-sources the sibling libraries it depends on.
 
 ! declare -F runner::run &>/dev/null || return 0

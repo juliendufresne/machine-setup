@@ -1,9 +1,10 @@
 # Specs for the orchestrator flow. The software mechanics and menus live in
-# lib/software.sh and the provisioner menu and run in lib/provisioner.sh, each with
-# their own spec; this file checks the flow that drives them (usage, setup, teardown,
-# main). TEST_FLAG keeps the machine_setup::* functions non-readonly so the spec can Include
-# the file and stub the software:: and provisioner:: calls; the script's own Execute
-# guard keeps machine_setup::main from running on Include.
+# lib/software.sh and the provisioner confirm and run in libexec/provisioner.sh, each
+# with their own spec; this file checks the flow that drives them (usage, setup,
+# teardown, main). TEST_FLAG keeps the machine_setup::* functions non-readonly so the
+# spec can Include the file, stub the software:: calls, and redirect LIBEXEC_DIR at a
+# fake provisioner executable; the script's own Execute guard keeps machine_setup::main
+# from running on Include.
 Describe 'bin/machine-setup'
     TEST_FLAG=true
     Include bin/machine-setup
@@ -34,14 +35,24 @@ Describe 'bin/machine-setup'
 
         software::install::pick() { printf 'alpha\nbeta\n'; }
         software::install() { printf 'install[%s]\n' "$*"; }
-        provisioner::choose() { printf 'workspace\ndotfiles\n'; }
-        provisioner::provision_all() { printf 'provision[%s]\n' "$*"; }
 
-        It 'selects software interactively, installs it, then provisions the chosen ones'
+        # The provisioner is now a libexec executable run as a subprocess, not a
+        # function: seed a fake under a redirected LIBEXEC_DIR so the flow drives a real
+        # exec without a network fetch. The default fake prints 'provision' and exits 0;
+        # a test that needs a different exit code rewrites the script.
+        install_setup() {
+            LIBEXEC_DIR="$HOME/libexec"
+            mkdir -p "$LIBEXEC_DIR"
+            printf '#!/usr/bin/env bash\nprintf "provision\\n"\n' >"$LIBEXEC_DIR/provisioner.sh"
+            chmod +x "$LIBEXEC_DIR/provisioner.sh"
+        }
+        BeforeEach 'install_setup'
+
+        It 'selects software interactively, installs it, then runs the provisioners'
             When call machine_setup::install
             The status should be success
             The line 1 of stdout should equal 'install[alpha beta]'
-            The line 2 of stdout should equal 'provision[workspace dotfiles]'
+            The line 2 of stdout should equal 'provision'
             The stderr should be blank
         End
 
@@ -56,15 +67,6 @@ Describe 'bin/machine-setup'
             When call machine_setup::install git workspace
             The status should be success
             The stdout should equal 'install[git workspace]'
-            The stderr should be blank
-        End
-
-        It 'skips provisioning when the toggle menu resolves to nothing'
-            provisioner::choose() { :; }
-
-            When call machine_setup::install
-            The status should be success
-            The stdout should equal 'install[alpha beta]'
             The stderr should be blank
         End
 
@@ -91,15 +93,11 @@ Describe 'bin/machine-setup'
         End
 
         It 'returns the worst status across the install and the provisioning'
-            provisioner::provision_all() {
-                printf 'provision[%s]\n' "$*"
-
-                return 7
-            }
+            printf '#!/usr/bin/env bash\nprintf "provision\\n"\nexit 7\n' >"$LIBEXEC_DIR/provisioner.sh"
 
             When call machine_setup::install
             The status should equal 7
-            The line 2 of stdout should equal 'provision[workspace dotfiles]'
+            The line 2 of stdout should equal 'provision'
             The stderr should be blank
         End
 

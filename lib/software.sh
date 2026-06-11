@@ -7,8 +7,8 @@ set -euo pipefail
 # a piece's status to a single word, drives the interactive checklists (set-up and
 # removal), refreshes the host package manager once for the whole run, stages and runs
 # the install and uninstall phases, and renders the status table. The provisioners are
-# not software and are never handled here: they are a fixed post-install step driven
-# through lib/provisioner.sh. Sourced by bin/machine-setup.
+# not software and are never handled here: they are a fixed post-install step run
+# through the libexec/provisioner.sh executable. Sourced by bin/machine-setup.
 
 ! declare -F software::discover &>/dev/null || return 0
 
@@ -770,9 +770,9 @@ then
     [[ -v TEST_FLAG ]] || readonly LIB_DIR
 fi
 
-# Directory holding the software executables: the per-OS software files under
-# <os>_<version>/software/. The provisioners own no executable here; they are driven
-# in-process through the framework (lib/provisioner.sh). Overridable through
+# Directory holding the executables: the per-OS software files under
+# <os>_<version>/software/, plus the OS-agnostic provisioner.sh at its top level (the
+# post-install step bin/machine-setup runs as a subprocess). Overridable through
 # MACHINE_SETUP_LIBEXEC_DIR so the suite can point it at fixtures.
 LIBEXEC_DIR="${MACHINE_SETUP_LIBEXEC_DIR:-${LIB_DIR%/*}/libexec}"
 [[ -v TEST_FLAG ]] || readonly LIBEXEC_DIR
