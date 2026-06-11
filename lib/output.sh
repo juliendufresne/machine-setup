@@ -281,6 +281,168 @@ output::fatal() {
 }
 [[ -v TEST_FLAG ]] || readonly -f output::fatal
 
+#--------------------------------------------------
+# Function:
+#   output::_spinner <message>
+#
+# Description:
+#   The spinner animation loop, run as a background process. Cycles through
+#   Braille frames forever, rewriting the current line with the cyan frame and the
+#   message on each tick. It never returns on its own; output::_stop kills it.
+#   Writes spinner frames to stdout.
+#
+# Arguments:
+#   <message>  The text shown next to the spinner
+#
+# Returns:
+#   does not return (looped until killed)
+#
+# Example:
+#   output::_spinner 'Installing the git package' &
+#--------------------------------------------------
+output::_spinner() {
+    local -a frames
+    local -i i
+    local message
+
+    message="$1"
+    frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
+    i=0
+
+    while true
+    do
+        printf '\r%s%b%s%b %s' "$OUTPUT_INDENT" "$OUTPUT_CYAN" "${frames[i % ${#frames[@]}]}" "$OUTPUT_RESET" "$message"
+        i=$(( i + 1 ))
+        sleep 0.1
+    done
+}
+[[ -v TEST_FLAG ]] || readonly -f output::_spinner
+
+#--------------------------------------------------
+# Function:
+#   output::_start <message>
+#
+# Description:
+#   Starts the pending indicator for a command. On a terminal it prints the first
+#   spinner frame and launches output::_spinner in the background, recording its
+#   pid in _OUTPUT_SPINNER_PID. Off a terminal (a pipe, a log file, the test
+#   runner) it does nothing, so captured output stays clean. Writes the first
+#   frame to stdout on a terminal.
+#
+# Arguments:
+#   <message>  The text shown next to the spinner
+#
+# Returns:
+#   0 on success
+#
+# Example:
+#   output::_start 'Installing the git package'
+#--------------------------------------------------
+output::_start() {
+    local message
+
+    message="$1"
+    output::color_enabled 1 || return 0
+
+    printf '%s%b⠋%b %s' "$OUTPUT_INDENT" "$OUTPUT_CYAN" "$OUTPUT_RESET" "$message"
+    ( output::_spinner "$message" ) &
+    _OUTPUT_SPINNER_PID=$!
+}
+[[ -v TEST_FLAG ]] || readonly -f output::_start
+
+#--------------------------------------------------
+# Function:
+#   output::_stop <message>
+#
+# Description:
+#   Stops the pending indicator started by output::_start. On a terminal it kills
+#   the spinner background process and erases the pending line by overwriting it
+#   with blanks, leaving the cursor at the start of the line so the caller can
+#   print the final result there. Off a terminal it does nothing. Writes blanks to
+#   stdout on a terminal.
+#
+# Arguments:
+#   <message>  The pending message, used to size the erase
+#
+# Returns:
+#   0 on success
+#
+# Example:
+#   output::_stop 'Installing the git package'
+#--------------------------------------------------
+output::_stop() {
+    local message
+    local -i width
+
+    message="$1"
+    output::color_enabled 1 || return 0
+
+    if [[ "$_OUTPUT_SPINNER_PID" -ne 0 ]]
+    then
+        kill "$_OUTPUT_SPINNER_PID" 2>/dev/null || true
+        wait "$_OUTPUT_SPINNER_PID" 2>/dev/null || true
+        _OUTPUT_SPINNER_PID=0
+    fi
+
+    width=$(( ${#OUTPUT_INDENT} + 2 + ${#message} ))   # indent + glyph + space + msg
+    printf '\r%*s\r' "$width" ''
+}
+[[ -v TEST_FLAG ]] || readonly -f output::_stop
+
+#--------------------------------------------------
+# Function:
+#   output::run <message> <command> [<arg>...]
+#
+# Description:
+#   Runs a single command while telling the user what it is doing. Shows <message>
+#   with a spinner (output::_start), runs <command> with its stdout and stderr
+#   captured together, then replaces the spinner with a result line: output::success
+#   on success, or output::error followed by the command's full captured output as
+#   a trace on stderr on failure. The command's exit status is returned, so a
+#   caller chains `|| return $?` to stop a sequence at the first failure. The
+#   command runs in a subshell, so it must not need to change the caller's shell
+#   state (it should only touch the system and the state store, which holds for the
+#   lifecycle hooks).
+#
+# Arguments:
+#   <message>   What the command does, shown next to the spinner and result glyph
+#   <command>   The command or function to run
+#   <arg>...    Optional arguments passed to the command
+#
+# Returns:
+#   0 when the command succeeds
+#   the command's exit status when it fails
+#
+# Example:
+#   output::run 'Installing the git package' sudo apt-get install -y git
+#--------------------------------------------------
+output::run() {
+    local -i exit_status
+    local message
+    local output
+
+    message="$1"
+    shift
+
+    output::_start "$message"
+
+    if output="$("$@" 2>&1)"
+    then
+        output::_stop "$message"
+        output::success "$message"
+
+        return 0
+    else
+        exit_status=$?
+        output::_stop "$message"
+        output::error "$message"
+        [[ -z "$output" ]] || printf '%s\n' "$output" >&2
+
+        return "$exit_status"
+    fi
+}
+[[ -v TEST_FLAG ]] || readonly -f output::run
+
 # ─── Constants / globals ────────────────────────────────────────────────────────
 
 # ANSI escape sequences, emitted with printf '%b' and gated at the call site by
@@ -292,8 +454,9 @@ OUTPUT_MAGENTA='\033[1;35m'
 OUTPUT_GREEN='\033[0;32m'
 OUTPUT_DIM='\033[2m'
 OUTPUT_RED='\033[0;31m'
+OUTPUT_CYAN='\033[0;36m'
 OUTPUT_YELLOW='\033[0;33m'
-[[ -v TEST_FLAG ]] || readonly OUTPUT_RESET OUTPUT_BOLD OUTPUT_MAGENTA OUTPUT_GREEN OUTPUT_DIM OUTPUT_RED OUTPUT_YELLOW
+[[ -v TEST_FLAG ]] || readonly OUTPUT_RESET OUTPUT_BOLD OUTPUT_MAGENTA OUTPUT_GREEN OUTPUT_DIM OUTPUT_RED OUTPUT_CYAN OUTPUT_YELLOW
 
 # Line vocabulary: the indent shared by every in-stage line and the glyph that
 # prefixes each. A run phase (output::log) heads a group of stages with », a level
@@ -307,3 +470,7 @@ OUTPUT_GLYPH_INFO='•'
 OUTPUT_GLYPH_WARN='!'
 OUTPUT_GLYPH_ERROR='✗'
 [[ -v TEST_FLAG ]] || readonly OUTPUT_INDENT OUTPUT_GLYPH_PHASE OUTPUT_GLYPH_STAGE OUTPUT_GLYPH_SUCCESS OUTPUT_GLYPH_INFO OUTPUT_GLYPH_WARN OUTPUT_GLYPH_ERROR
+
+# The spinner background process id, 0 when no spinner is running. Mutable, so it
+# is intentionally not readonly.
+_OUTPUT_SPINNER_PID=0
