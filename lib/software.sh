@@ -606,6 +606,158 @@ software::uninstall() {
 }
 [[ -v TEST_FLAG ]] || readonly -f software::uninstall
 
+#--------------------------------------------------
+# Function:
+#   software::install::pick
+#
+# Description:
+#   Resolves the software to set up interactively and prints the chosen names, one
+#   per line, to stdout. It builds one checklist entry per discovered piece, leaving
+#   out any piece whose status is 'unavailable' (a host it cannot run on), and
+#   pre-ticks per the design: when a previous run recorded owned pieces it ticks
+#   those, otherwise it ticks every available piece. The entries are handed to
+#   menu::select; with no terminal menu::select falls back to the pre-ticked set,
+#   so an unattended run still resolves a selection. Reads the software's status, the
+#   state store, and the descriptions; drives the checklist on the terminal (see
+#   menu::select); stdout carries only the chosen names.
+#
+# Arguments:
+#   N/A
+#
+# Returns:
+#   0 when a selection was produced (possibly empty)
+#
+# Example:
+#   software::install::pick
+#--------------------------------------------------
+software::install::pick() {
+    local description
+    local -a entries
+    local has_state
+    local listing
+    local name
+    local -a names
+    local -i state
+    local status
+
+    listing="$(software::discover)"
+    names=()
+    [[ -z "$listing" ]] || mapfile -t names <<<"$listing"
+
+    # Pre-tick rule: when a previous run recorded owned software, tick those; with
+    # no prior state, tick every available piece.
+    has_state=''
+    for name in "${names[@]}"
+    do
+        if state::owned "$name"
+        then
+            has_state=1
+
+            break
+        fi
+    done
+
+    entries=()
+    for name in "${names[@]}"
+    do
+        status="$(software::status_of "$name")"
+        [[ "$status" != unavailable ]] || continue
+
+        state=1
+        if [[ -n "$has_state" ]]
+        then
+            state=0
+            ! state::owned "$name" || state=1
+        fi
+
+        description="$(software::description_of "$name")"
+        entries+=("$(printf '%d\t%s\t%s' "$state" "$name" "$description")")
+    done
+
+    # Pin a header over the checklist and clear the region under it; the selection
+    # still goes to stdout (captured), while the header and help draw to the tty,
+    # so a captured run is unaffected. Both bracket calls are no-ops with no tty.
+    screen::open 'Set up this machine' 'Tick the software to set up, then confirm to continue.'
+    SCREEN_HELP='Space toggles a piece; ticked software is set up or updated.' \
+        menu::select "${entries[@]}"
+    screen::close
+}
+[[ -v TEST_FLAG ]] || readonly -f software::install::pick
+
+#--------------------------------------------------
+# Function:
+#   software::uninstall::pick
+#
+# Description:
+#   Resolves which installed software the user wants removed and prints the chosen
+#   names one per line to stdout. It considers every discovered piece, keeps the
+#   ones actually present (status installed, configured, or unmanaged), and offers
+#   them in a checklist, every entry unticked and labelled with its current status,
+#   whose wording makes clear that toggling an entry on schedules it for removal.
+#   Removal is never the default and never automatic: a piece is removed only when
+#   the user explicitly ticks it. The provisioners are not software and own no
+#   checkout, so they never appear here. With nothing removable it prints nothing and
+#   skips the menu. With no terminal menu::select falls back to the ticked set, which
+#   is empty here, so an unattended run removes nothing. Reads the software's status
+#   and the descriptions; drives the checklist on the terminal (see menu::select);
+#   stdout carries only the chosen names.
+#
+# Arguments:
+#   N/A
+#
+# Returns:
+#   0 when a removal selection was produced (possibly empty)
+#
+# Example:
+#   software::uninstall::pick
+#--------------------------------------------------
+software::uninstall::pick() {
+    local description
+    local -a entries
+    local listing
+    local name
+    local -a names
+    local status
+
+    listing="$(software::discover)"
+    names=()
+    [[ -z "$listing" ]] || mapfile -t names <<<"$listing"
+
+    entries=()
+    for name in "${names[@]}"
+    do
+        status="$(software::status_of "$name")"
+        case "$status" in
+            installed | configured | unmanaged)
+                : # Present and removable; offer it.
+                ;;
+            *)
+                continue # unavailable or available: nothing to remove.
+                ;;
+        esac
+
+        # Every candidate is offered unticked: removal is never the default and
+        # never automatic. The user must explicitly tick a piece to remove it, and
+        # with no terminal (the fallback emits only the ticked set) nothing is
+        # removed. The current status leads the label so the menu shows what state
+        # each removable piece is in.
+        description="$(software::description_of "$name")"
+        entries+=("$(printf '0\t%s\t%s' "$name" "$status${description:+  $description}")")
+    done
+
+    ((${#entries[@]} > 0)) || return 0
+
+    # Pin a header over the removal checklist and clear the region under it; the
+    # selection still goes to stdout (captured) while the header and help draw to
+    # the tty. Both bracket calls are no-ops with no tty.
+    screen::open 'Remove installed software' 'Tick any installed software to uninstall and unconfigure it.'
+    MENU_PROMPT='Select installed software to UNINSTALL and unconfigure. Arrows or j/k move, space toggles, Enter confirms.' \
+        SCREEN_HELP='Nothing is removed unless you tick it; ticking reverses the software.' \
+        menu::select "${entries[@]}"
+    screen::close
+}
+[[ -v TEST_FLAG ]] || readonly -f software::uninstall::pick
+
 # ─── Constants / globals ────────────────────────────────────────────────────────
 
 # This library's own directory, so the sibling libraries are sourced regardless of

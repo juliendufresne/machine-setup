@@ -507,4 +507,120 @@ Describe 'lib/software.sh'
 
     End
 
+    # ==========================================================================
+    # software::install::pick
+    # ==========================================================================
+    Describe 'software::install::pick'
+
+        software::description_of() { printf 'desc'; }
+
+        menu::select() {
+            local entry
+
+            for entry in "$@"
+            do
+                printf '%s\n' "$entry"
+            done
+        }
+
+        It 'skips unavailable software and pre-ticks every available piece with no prior state'
+            software::discover() { printf 'alpha\nbeta\ngamma\n'; }
+
+            software::status_of() {
+                case "$1" in
+                    gamma) printf 'unavailable' ;;
+                    *) printf 'available' ;;
+                esac
+            }
+            state::owned() { return 1; }
+
+            When call software::install::pick
+            The status should be success
+            The line 1 of stdout should equal "$(printf '1\talpha\tdesc')"
+            The line 2 of stdout should equal "$(printf '1\tbeta\tdesc')"
+            The stderr should be blank
+        End
+
+        It 'pre-ticks only the owned software when a previous run recorded some'
+            software::discover() { printf 'alpha\nbeta\n'; }
+            software::status_of() { printf 'available'; }
+            state::owned() { [[ "$1" == alpha ]]; }
+
+            When call software::install::pick
+            The status should be success
+            The line 1 of stdout should equal "$(printf '1\talpha\tdesc')"
+            The line 2 of stdout should equal "$(printf '0\tbeta\tdesc')"
+            The stderr should be blank
+        End
+
+    End
+
+    # ==========================================================================
+    # software::uninstall::pick
+    # ==========================================================================
+    Describe 'software::uninstall::pick'
+
+        software::description_of() { printf 'desc'; }
+
+        menu::select() {
+            local entry
+
+            for entry in "$@"
+            do
+                printf '%s\n' "$entry"
+            done
+        }
+
+        It 'offers every installed piece unticked, never pre-ticking'
+            software::discover() { printf 'alpha\nbeta\ngamma\ndelta\n'; }
+
+            software::status_of() {
+                case "$1" in
+                    delta) printf 'available' ;;
+                    *) printf 'configured' ;;
+                esac
+            }
+
+            When call software::uninstall::pick
+            The status should be success
+            The line 1 of stdout should equal "$(printf '0\talpha\tconfigured  desc')"
+            The line 2 of stdout should equal "$(printf '0\tbeta\tconfigured  desc')"
+            The line 3 of stdout should equal "$(printf '0\tgamma\tconfigured  desc')"
+            The stderr should be blank
+        End
+
+        It 'offers a foreign install unticked, labelled with its status'
+            software::discover() { printf 'alpha\n'; }
+            software::status_of() { printf 'unmanaged'; }
+
+            When call software::uninstall::pick
+            The status should be success
+            The stdout should equal "$(printf '0\talpha\tunmanaged  desc')"
+            The stderr should be blank
+        End
+
+        It 'prints nothing and skips the menu when nothing is removable'
+            software::discover() { printf 'alpha\n'; }
+            software::status_of() { printf 'available'; }
+            menu::select() { printf 'MENU CALLED\n'; }
+
+            When call software::uninstall::pick
+            The status should be success
+            The stdout should be blank
+            The stderr should be blank
+        End
+
+        It 'labels the menu as an uninstall menu'
+            software::discover() { printf 'alpha\n'; }
+            software::status_of() { printf 'installed'; }
+            menu::select() { printf '%s\n' "$MENU_PROMPT"; }
+
+            When call software::uninstall::pick
+            The status should be success
+            The stdout should include 'UNINSTALL'
+            The stderr should be blank
+        End
+
+    End
+
 End
