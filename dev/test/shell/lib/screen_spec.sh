@@ -43,6 +43,64 @@ Describe 'lib/screen.sh'
     End
 
     # ==========================================================================
+    # screen::region
+    # ==========================================================================
+    Describe 'screen::region'
+
+        It 'reprints the header and clears to the end of the screen'
+            screen::open 'Workspace setup'
+            : >"$SCREEN_OUTPUT"                    # discard the open draw; assert only the region draw
+
+            clear_to_end="$(printf '\033[0J')"
+            When call screen::region
+            The status should be success
+            The stdout should be blank
+            The stderr should be blank
+            The contents of file "$SCREEN_OUTPUT" should include 'Workspace setup'
+            The contents of file "$SCREEN_OUTPUT" should include "$clear_to_end"
+        End
+
+        It 'is a no-op when no screen is open'
+            SCREEN_ACTIVE=''
+            When call screen::region
+            The status should be success
+            The stdout should be blank
+            The stderr should be blank
+            The contents of file "$SCREEN_OUTPUT" should equal ''
+        End
+
+    End
+
+    # ==========================================================================
+    # screen::help
+    # ==========================================================================
+    Describe 'screen::help'
+
+        It 'prints the help text into the region when active'
+            screen::open 'Workspace setup'
+            : >"$SCREEN_OUTPUT"
+
+            SCREEN_HELP='why this matters'
+            When call screen::help
+            The status should be success
+            The stdout should be blank
+            The stderr should be blank
+            The contents of file "$SCREEN_OUTPUT" should include 'why this matters'
+        End
+
+        It 'is a no-op when no screen is open'
+            SCREEN_ACTIVE=''
+            SCREEN_HELP='why this matters'
+            When call screen::help
+            The status should be success
+            The stdout should be blank
+            The stderr should be blank
+            The contents of file "$SCREEN_OUTPUT" should equal ''
+        End
+
+    End
+
+    # ==========================================================================
     # screen::close
     # ==========================================================================
     Describe 'screen::close'
