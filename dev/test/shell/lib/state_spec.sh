@@ -91,6 +91,84 @@ Describe 'lib/state.sh'
     End
 
     # ==========================================================================
+    # state::ask
+    # ==========================================================================
+    Describe 'state::ask'
+
+        It 'reuses a saved value without prompting'
+            helper::seed_input git.name 'Ada'
+
+            When call state::ask git.name 'Your git name'
+            The status should be success
+            The stdout should be blank
+            The stderr should be blank
+            The contents of file "$XDG_STATE_HOME/machine-setup/inputs/git.name" should equal 'Ada'
+        End
+
+        It 'takes the value from the environment when nothing is saved'
+            GIT_NAME=Ada
+            When call state::ask git.name 'Your git name'
+            The status should be success
+            The stdout should be blank
+            The stderr should be blank
+            The contents of file "$XDG_STATE_HOME/machine-setup/inputs/git.name" should equal 'Ada'
+        End
+
+        It 'prompts for the value when there is no saved or environment value'
+            GIT_NAME=''
+            Data 'Ada'
+            When call state::ask git.name 'Your git name'
+            The status should be success
+            The stdout should be blank
+            The stderr should be blank
+            The contents of file "$XDG_STATE_HOME/machine-setup/inputs/git.name" should equal 'Ada'
+        End
+
+        It 'draws the sticky header and help line into the screen output'
+            SCREEN_OUTPUT="$SHELLSPEC_TMPBASE/state-screen"
+            : >"$SCREEN_OUTPUT"
+            screen::open 'Dotfiles setup'
+
+            GIT_NAME=''
+            Data 'Ada'
+            SCREEN_HELP='The git author name.'
+            When call state::ask git.name 'Your git name'
+            The status should be success
+            The stdout should be blank
+            The stderr should be blank
+            The contents of file "$XDG_STATE_HOME/machine-setup/inputs/git.name" should equal 'Ada'
+            The contents of file "$SCREEN_OUTPUT" should include 'Dotfiles setup'
+            The contents of file "$SCREEN_OUTPUT" should include 'The git author name.'
+        End
+
+        It 'writes a freshly resolved value to the working overlay during a session'
+            helper::overlay git
+
+            GIT_NAME=Ada
+            When call state::ask git.name 'Your git name'
+            The status should be success
+            The stdout should be blank
+            The stderr should be blank
+            The contents of file "$MACHINE_SETUP_INPUTS_WORKING/git.name" should equal 'Ada'
+            The path "$XDG_STATE_HOME/machine-setup/inputs/git.name" should not be exist
+        End
+
+        It 'reuses a committed value without prompting during a session'
+            helper::overlay git
+            helper::seed_input git.name 'Ada'
+
+            GIT_NAME=Grace
+            When call state::ask git.name 'Your git name'
+            The status should be success
+            The stdout should be blank
+            The stderr should be blank
+            The path "$MACHINE_SETUP_INPUTS_WORKING/git.name" should not be exist
+            The contents of file "$XDG_STATE_HOME/machine-setup/inputs/git.name" should equal 'Ada'
+        End
+
+    End
+
+    # ==========================================================================
     # state::set
     # ==========================================================================
     Describe 'state::set'
@@ -208,6 +286,47 @@ Describe 'lib/state.sh'
             The stderr should be blank
             The path "$MACHINE_SETUP_INPUTS_WORKING/workspace.list" should not be exist
             The path "$XDG_STATE_HOME/machine-setup/inputs/workspace.list" should not be exist
+        End
+
+    End
+
+    # ==========================================================================
+    # state::unset_prefix
+    # ==========================================================================
+    Describe 'state::unset_prefix'
+
+        It 'removes every input whose name begins with the prefix'
+            helper::seed_input workspace.personal.path /srv/personal
+            helper::seed_input workspace.personal.user.email ada@example.com
+            helper::seed_input workspace.acme.path /srv/acme
+
+            When call state::unset_prefix workspace.personal.
+            The status should be success
+            The stdout should be blank
+            The stderr should be blank
+            The path "$XDG_STATE_HOME/machine-setup/inputs/workspace.personal.path" should not be exist
+            The path "$XDG_STATE_HOME/machine-setup/inputs/workspace.personal.user.email" should not be exist
+            The path "$XDG_STATE_HOME/machine-setup/inputs/workspace.acme.path" should be exist
+        End
+
+        It 'is a no-op when no input matches the prefix'
+            When call state::unset_prefix workspace.personal.
+            The status should be success
+            The stdout should be blank
+            The stderr should be blank
+        End
+
+        It 'also clears matching inputs from the working overlay'
+            helper::overlay workspace
+            helper::seed_working workspace.personal.path /srv/personal
+            helper::seed_working workspace.acme.path /srv/acme
+
+            When call state::unset_prefix workspace.personal.
+            The status should be success
+            The stdout should be blank
+            The stderr should be blank
+            The path "$MACHINE_SETUP_INPUTS_WORKING/workspace.personal.path" should not be exist
+            The path "$MACHINE_SETUP_INPUTS_WORKING/workspace.acme.path" should be exist
         End
 
     End

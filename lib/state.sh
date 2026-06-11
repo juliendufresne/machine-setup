@@ -159,6 +159,67 @@ state::_put() {
 
 #--------------------------------------------------
 # Function:
+#   state::ask <name> <prompt>
+#
+# Description:
+#   Resolves an input once and saves it: reuse a saved value, else take it from
+#   the environment, else prompt on the terminal. Reuse-first keeps repeated
+#   configuration idempotent. When a sticky-header screen is open it first clears
+#   the region and prints the SCREEN_HELP help line to SCREEN_OUTPUT before
+#   prompting (a no-op otherwise). May read from stdin and writes the input file.
+#
+# Arguments:
+#   <name>    The input name
+#   <prompt>  The text shown when prompting
+#
+# Returns:
+#   0 on success
+#
+# Example:
+#   state::ask git.name 'Your git name'
+#--------------------------------------------------
+state::ask() {
+    local committed
+    local env_name
+    local name
+    local prompt
+    local value
+    local working
+
+    name="$1"
+    prompt="$2"
+    working="${MACHINE_SETUP_INPUTS_WORKING:-}"
+    committed="$(state::_root)/inputs/$name"
+
+    # Resolve once: a value already entered this run (the working overlay) or saved
+    # on an earlier run (committed) is reused as is, never re-prompted.
+    [[ -n "$working" && -f "$working/$name" ]] && return 0
+    [[ -f "$committed" ]] && return 0
+
+    env_name="$(state::_envname "$name")"
+    if [[ -n "${!env_name:-}" ]]
+    then
+        value="${!env_name}"
+    else
+        # Clear the region under any open sticky header and draw this input's help
+        # line, then prompt. Both are no-ops when no screen is open.
+        screen::region
+        screen::help
+
+        read -r -p "$prompt: " value
+    fi
+
+    if [[ -n "$working" ]]
+    then
+        state::_put "$working/$name" "$value"
+    else
+        state::_put "$committed" "$value"
+    fi
+}
+[[ -v TEST_FLAG ]] || readonly -f state::ask
+
+#--------------------------------------------------
+# Function:
 #   state::set <name> <value>
 #
 # Description:
@@ -267,6 +328,48 @@ state::unset() {
     fi
 }
 [[ -v TEST_FLAG ]] || readonly -f state::unset
+
+#--------------------------------------------------
+# Function:
+#   state::unset_prefix <prefix>
+#
+# Description:
+#   Removes every saved input whose name begins with <prefix>, so a caller can
+#   clear a whole namespace of inputs in one call (for example all of a workspace's
+#   slug-namespaced keys). Idempotent: a prefix matching nothing is a no-op.
+#   Removes the matching input files.
+#
+# Arguments:
+#   <prefix>  The input-name prefix to clear
+#
+# Returns:
+#   0 on success
+#
+# Example:
+#   state::unset_prefix workspace.personal.
+#--------------------------------------------------
+state::unset_prefix() {
+    local file
+    local prefix
+
+    prefix="$1"
+
+    for file in "$(state::_root)/inputs/$prefix"*
+    do
+        [[ -e "$file" ]] || continue          # the glob matched nothing
+        rm -f "$file"
+    done
+
+    if [[ -n "${MACHINE_SETUP_INPUTS_WORKING:-}" ]]
+    then
+        for file in "$MACHINE_SETUP_INPUTS_WORKING/$prefix"*
+        do
+            [[ -e "$file" ]] || continue
+            rm -f "$file"
+        done
+    fi
+}
+[[ -v TEST_FLAG ]] || readonly -f state::unset_prefix
 
 # ─── Constants / globals ────────────────────────────────────────────────────────
 
