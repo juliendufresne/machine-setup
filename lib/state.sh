@@ -451,6 +451,100 @@ state::commit_prefix() {
 }
 [[ -v TEST_FLAG ]] || readonly -f state::commit_prefix
 
+#--------------------------------------------------
+# Function:
+#   state::commit_line_append <name> <line>
+#
+# Description:
+#   Adds <line> to a committed newline-separated list input, so an aggregate
+#   registry (workspace.list) gains an entry the moment the thing it names is
+#   performed, keeping it in step with the per-entry inputs committed alongside.
+#   Writes directly to inputs/ rather than through the overlay, because the working
+#   copy still holds the whole run's list. Idempotent: a line already present is
+#   not added again, and the no-trailing-newline convention is preserved. Writes
+#   the committed list file.
+#
+# Arguments:
+#   <name>  The list input name
+#   <line>  The entry to add
+#
+# Returns:
+#   0 on success
+#
+# Example:
+#   state::commit_line_append workspace.list Personal
+#--------------------------------------------------
+state::commit_line_append() {
+    local file
+    local line
+    local name
+
+    name="$1"
+    line="$2"
+    file="$(state::_root)/inputs/$name"
+
+    [[ -f "$file" ]] && grep -qxF -- "$line" "$file" && return 0   # already listed
+
+    mkdir -p "$(dirname "$file")"
+    if [[ -s "$file" ]]
+    then
+        printf '\n%s' "$line" >>"$file"
+    else
+        printf '%s' "$line" >"$file"
+    fi
+}
+[[ -v TEST_FLAG ]] || readonly -f state::commit_line_append
+
+#--------------------------------------------------
+# Function:
+#   state::commit_line_remove <name> <line>
+#
+# Description:
+#   Removes <line> from a committed newline-separated list input, the delete-side
+#   counterpart to state::commit_line_append, so deregistering a thing drops its
+#   registry entry as the removal is performed. Rewrites the list without the line
+#   (preserving order and the no-trailing-newline convention) and removes the file
+#   entirely when it becomes empty. Idempotent: a missing file or absent line is a
+#   no-op. Writes or removes the committed list file.
+#
+# Arguments:
+#   <name>  The list input name
+#   <line>  The entry to remove
+#
+# Returns:
+#   0 on success
+#
+# Example:
+#   state::commit_line_remove workspace.list Personal
+#--------------------------------------------------
+state::commit_line_remove() {
+    local existing
+    local file
+    local line
+    local name
+    local rebuilt
+
+    name="$1"
+    line="$2"
+    file="$(state::_root)/inputs/$name"
+    [[ -f "$file" ]] || return 0
+
+    rebuilt=''
+    while IFS= read -r existing || [[ -n "$existing" ]]
+    do
+        [[ "$existing" == "$line" ]] && continue
+        rebuilt+="${rebuilt:+$'\n'}$existing"
+    done <"$file"
+
+    if [[ -n "$rebuilt" ]]
+    then
+        printf '%s' "$rebuilt" >"$file"
+    else
+        rm -f "$file"
+    fi
+}
+[[ -v TEST_FLAG ]] || readonly -f state::commit_line_remove
+
 # ─── Constants / globals ────────────────────────────────────────────────────────
 
 # This library's own directory, so the sibling library is sourced regardless of
