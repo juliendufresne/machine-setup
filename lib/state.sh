@@ -545,6 +545,230 @@ state::commit_line_remove() {
 }
 [[ -v TEST_FLAG ]] || readonly -f state::commit_line_remove
 
+#--------------------------------------------------
+# Function:
+#   state::own <id>
+#
+# Description:
+#   Records that we manage a unit by creating an empty owned-marker file for
+#   <id>. Writes a file.
+#
+# Arguments:
+#   <id>  The unit id
+#
+# Returns:
+#   0 on success
+#   non-zero when the marker cannot be written
+#
+# Example:
+#   state::own git
+#--------------------------------------------------
+state::own() {
+    : >"$(state::_dir managed)/$(state::_key "$1")"
+}
+[[ -v TEST_FLAG ]] || readonly -f state::own
+
+#--------------------------------------------------
+# Function:
+#   state::disown <id>
+#
+# Description:
+#   Removes the owned-marker for <id>. Removes a file.
+#
+# Arguments:
+#   <id>  The unit id
+#
+# Returns:
+#   0 on success
+#
+# Example:
+#   state::disown git
+#--------------------------------------------------
+state::disown() {
+    rm -f "$(state::_root)/managed/$(state::_key "$1")"
+}
+[[ -v TEST_FLAG ]] || readonly -f state::disown
+
+#--------------------------------------------------
+# Function:
+#   state::owned <id>
+#
+# Description:
+#   Reports whether <id> has an owned-marker, that is whether we manage it.
+#   Writes nothing.
+#
+# Arguments:
+#   <id>  The unit id
+#
+# Returns:
+#   0 when the unit is owned
+#   1 otherwise
+#
+# Example:
+#   state::owned git
+#--------------------------------------------------
+state::owned() {
+    [[ -e "$(state::_root)/managed/$(state::_key "$1")" ]]
+}
+[[ -v TEST_FLAG ]] || readonly -f state::owned
+
+#--------------------------------------------------
+# Function:
+#   state::remember <key> <value>
+#
+# Description:
+#   Records the prior value of a configuration variable before we change it, the
+#   first time only, so re-running configure (which the runner does on every
+#   install) never overwrites the genuine original with a value we set
+#   ourselves. An empty record means the variable was absent. The id is the
+#   current unit's name. Writes a file.
+#
+# Arguments:
+#   <key>    The configuration variable name
+#   <value>  The prior value to record
+#
+# Returns:
+#   0 on success
+#
+# Example:
+#   state::remember user.name 'Ada'
+#--------------------------------------------------
+state::remember() {
+    local dir
+    local key
+    local value
+
+    key="$1"
+    value="$2"
+    dir="$(state::_dir "config/$(state::_key "$(runner::unit_name)")")"
+    [[ -e "$dir/$key" ]] && return 0          # original already captured; keep it
+
+    state::_put "$dir/$key" "$value"
+}
+[[ -v TEST_FLAG ]] || readonly -f state::remember
+
+#--------------------------------------------------
+# Function:
+#   state::recall <key>
+#
+# Description:
+#   Prints a remembered prior configuration value to stdout (nothing when none
+#   was recorded). The id is the current unit's name.
+#
+# Arguments:
+#   <key>  The configuration variable name
+#
+# Returns:
+#   0 on success
+#
+# Example:
+#   state::recall user.name
+#--------------------------------------------------
+state::recall() {
+    local file
+
+    file="$(state::_root)/config/$(state::_key "$(runner::unit_name)")/$1"
+    [[ -f "$file" ]] || return 0
+
+    cat "$file"
+}
+[[ -v TEST_FLAG ]] || readonly -f state::recall
+
+#--------------------------------------------------
+# Function:
+#   state::created <id> <path>
+#
+# Description:
+#   Appends <path> to a unit instance's manifest, the list of paths it created.
+#   Writes a file.
+#
+# Arguments:
+#   <id>    The unit instance id
+#   <path>  The path that was created
+#
+# Returns:
+#   0 on success
+#   non-zero when the manifest cannot be written
+#
+# Example:
+#   state::created 'workspaces/api@/srv/api' /srv/api/.git
+#--------------------------------------------------
+state::created() {
+    local file
+    local id
+    local path
+
+    id="$1"
+    path="$2"
+    file="$(state::_dir manifests)/$(state::_key "$id")"
+
+    printf '%s\n' "$path" >>"$file"
+}
+[[ -v TEST_FLAG ]] || readonly -f state::created
+
+#--------------------------------------------------
+# Function:
+#   state::forget <id>
+#
+# Description:
+#   Removes a unit instance's manifest, the delete-side counterpart to
+#   state::created, so the paths it recorded creating are forgotten and a later
+#   re-creation under the same id starts from an empty manifest rather than
+#   appending to stale entries. Idempotent: a missing manifest is a no-op. Removes
+#   the manifest file.
+#
+# Arguments:
+#   <id>  The unit instance id
+#
+# Returns:
+#   0 on success
+#
+# Example:
+#   state::forget 'workspace@personal'
+#--------------------------------------------------
+state::forget() {
+    rm -f "$(state::_root)/manifests/$(state::_key "$1")"
+}
+[[ -v TEST_FLAG ]] || readonly -f state::forget
+
+#--------------------------------------------------
+# Function:
+#   state::contains_only_created <id> <root>
+#
+# Description:
+#   Reports whether every path under <root> is one this instance recorded
+#   creating, so its uninstall can safely remove the workspace and nothing
+#   foreign. Writes nothing.
+#
+# Arguments:
+#   <id>    The unit instance id
+#   <root>  The directory whose contents are checked
+#
+# Returns:
+#   0 when every path under <root> was recorded
+#   1 when the manifest is missing or a foreign path is found
+#
+# Example:
+#   state::contains_only_created 'workspaces/api@/srv/api' /srv/api
+#--------------------------------------------------
+state::contains_only_created() {
+    local id
+    local manifest
+    local path
+    local root
+
+    id="$1"
+    root="$2"
+    manifest="$(state::_root)/manifests/$(state::_key "$id")"
+    [[ -f "$manifest" ]] || return 1
+
+    while IFS= read -r path
+    do
+        grep -qxF -- "$path" "$manifest" || return 1
+    done < <(find "$root" -mindepth 1)
+}
+[[ -v TEST_FLAG ]] || readonly -f state::contains_only_created
+
 # ─── Constants / globals ────────────────────────────────────────────────────────
 
 # This library's own directory, so the sibling library is sourced regardless of
