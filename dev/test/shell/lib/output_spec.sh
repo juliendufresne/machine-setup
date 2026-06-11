@@ -189,4 +189,113 @@ Describe 'lib/output.sh'
 
     End
 
+    # ==========================================================================
+    # output::_spinner
+    # ==========================================================================
+    Describe 'output::_spinner'
+
+        It 'draws a cyan frame next to the message each tick'
+            sleep() { exit 0; }
+
+            When run output::_spinner 'Installing the git package'
+            The status should be success
+            The stdout should include '0;36m'
+            The stdout should include 'Installing the git package'
+            The stderr should be blank
+        End
+
+    End
+
+    # ==========================================================================
+    # output::_start
+    # ==========================================================================
+    Describe 'output::_start'
+
+        It 'does nothing off a terminal'
+            output::color_enabled() { return 1; }
+
+            When call output::_start 'Installing the git package'
+            The status should be success
+            The stdout should be blank
+            The stderr should be blank
+        End
+
+        It 'prints the first frame and launches the spinner on a terminal'
+            output::color_enabled() { return 0; }
+            output::_spinner() { :; }
+
+            When call output::_start 'Installing the git package'
+            The status should be success
+            The stdout should include 'Installing the git package'
+            The stderr should be blank
+            The variable _OUTPUT_SPINNER_PID should not equal 0
+        End
+
+    End
+
+    # ==========================================================================
+    # output::_stop
+    # ==========================================================================
+    Describe 'output::_stop'
+
+        It 'does nothing off a terminal'
+            output::color_enabled() { return 1; }
+
+            When call output::_stop 'Installing the git package'
+            The status should be success
+            The stdout should be blank
+            The stderr should be blank
+        End
+
+        It 'kills the spinner and erases the pending line on a terminal'
+            output::color_enabled() { return 0; }
+            kill() { :; }
+            wait() { :; }
+
+            _OUTPUT_SPINNER_PID=12345
+            When call output::_stop 'Installing the git package'
+            The status should be success
+            The stdout should not be blank
+            The stderr should be blank
+            The variable _OUTPUT_SPINNER_PID should equal 0
+        End
+
+    End
+
+    # ==========================================================================
+    # output::run
+    # ==========================================================================
+    Describe 'output::run'
+
+        It 'shows a check with the message and hides the command output on success'
+            noisy() { printf 'chatty stdout\n'; printf 'chatty stderr\n' >&2; }
+
+            When call output::run 'Installing the git package' noisy
+            The status should be success
+            The stdout should equal '  ✓ Installing the git package'
+            The stderr should be blank
+        End
+
+        It 'shows a cross with the message and the captured output and propagates the status on failure'
+            noisy() { printf 'boom on stdout\n'; printf 'boom on stderr\n' >&2; return 3; }
+
+            When call output::run 'Installing the git package' noisy
+            The status should equal 3
+            The stdout should be blank
+            The line 1 of stderr should equal '  ✗ Installing the git package'
+            The stderr should include 'boom on stdout'
+            The stderr should include 'boom on stderr'
+        End
+
+        It 'shows no trace when a failing command produces no output'
+            silent() { return 4; }
+
+            When call output::run 'Configuring git' silent
+            The status should equal 4
+            The stdout should be blank
+            The stderr should equal '  ✗ Configuring git'
+        End
+
+    End
+
 End
