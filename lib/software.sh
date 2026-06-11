@@ -198,6 +198,206 @@ software::mark() {
 }
 [[ -v TEST_FLAG ]] || readonly -f software::mark
 
+#--------------------------------------------------
+# Function:
+#   software::cell <flag> <width>
+#
+# Description:
+#   Prints a status cell (software::mark) left-aligned in a column <width>
+#   visible columns wide, padding with trailing spaces after the one-column glyph.
+#   Padding is by visible width, not byte count, so the columns line up whether or
+#   not the glyph carries colour codes. For the last column of a row, print the mark
+#   directly instead, so no trailing whitespace is emitted. Writes the padded cell to
+#   stdout.
+#
+# Arguments:
+#   <flag>   1 for true, 0 for false (see software::mark)
+#   <width>  The column width in visible columns
+#
+# Returns:
+#   0 always
+#
+# Example:
+#   software::cell 1 9
+#--------------------------------------------------
+software::cell() {
+    software::mark "$1"
+    printf '%*s' "$(($2 - 1))" ''
+}
+[[ -v TEST_FLAG ]] || readonly -f software::cell
+
+#--------------------------------------------------
+# Function:
+#   software::status_table
+#
+# Description:
+#   Renders the software status table to stdout, reading one line per unit from stdin.
+#   Each line is '<name>\t<word>\t<managed>' and it prints the four-column table
+#   (name, available, installed, managed): the status word fixes available (every word
+#   but 'unavailable') and installed (every word from 'unmanaged' on, present on the
+#   host), while managed comes from the explicit <managed> flag (1 or 0), so it
+#   reflects the state store's ownership marker - whether we installed and configured
+#   it - not the unit's is_managed word, which for a package only asks whether the
+#   package is present. The name column is right-padded to its widest entry (at least
+#   the 'name' header) so the table lines up; the cells are green checks or red crosses
+#   (software::mark). A unit the host cannot run (not available) shows a dimmed dash
+#   rather than a cross in the installed and managed columns it leaves false, since
+#   being absent is not a failure for software that cannot run here. With no input
+#   lines it prints nothing (the caller skips the section). Reads stdin; writes the
+#   table to stdout.
+#
+# Arguments:
+#   (none)
+#
+# Returns:
+#   0 always
+#
+# Example:
+#   printf 'git\tconfigured\t1\n' | software::status_table
+#--------------------------------------------------
+software::status_table() {
+    local -i available
+    local -i installed
+    local installed_cell
+    local line
+    local -i managed
+    local managed_cell
+    local name
+    local -i namew
+    local rest
+    local -a rows
+    local word
+
+    mapfile -t rows
+    ((${#rows[@]} > 0)) || return 0
+
+    # The name column is as wide as its widest entry, never narrower than its header.
+    namew=4
+    for line in "${rows[@]}"
+    do
+        name="${line%%$'\t'*}"
+        ((${#name} <= namew)) || namew=${#name}
+    done
+
+    printf '%-*s  %-9s  %-9s  %s\n' "$namew" 'name' 'available' 'installed' 'managed'
+    for line in "${rows[@]}"
+    do
+        name="${line%%$'\t'*}"
+        rest="${line#*$'\t'}"
+        word="${rest%%$'\t'*}"
+        # managed is the explicit state-ownership flag, not derived from the word.
+        managed="${rest##*$'\t'}"
+
+        # The word fixes availability and presence; ownership comes from the flag.
+        available=0
+        [[ "$word" == unavailable ]] || available=1
+
+        installed=0
+        case "$word" in
+            unmanaged | installed | configured) installed=1 ;;
+        esac
+
+        # An unavailable unit cannot be installed or managed here, so a cross would
+        # read as a failure where there is none: show a dash for whichever of the two
+        # is false. A unit present by other means still reads as a check.
+        installed_cell="$installed"
+        managed_cell="$managed"
+        if ((!available))
+        then
+            ((installed)) || installed_cell='-'
+            ((managed)) || managed_cell='-'
+        fi
+
+        printf '%-*s  ' "$namew" "$name"
+        software::cell "$available" 9
+        printf '  '
+        software::cell "$installed_cell" 9
+        printf '  '
+        software::mark "$managed_cell"
+        printf '\n'
+    done
+}
+[[ -v TEST_FLAG ]] || readonly -f software::status_table
+
+#--------------------------------------------------
+# Function:
+#   software::status_report [name]...
+#
+# Description:
+#   Reports each piece of software's status as one aligned table on stdout (name,
+#   available, installed, managed). With names given it reports exactly those; with
+#   none it reports every discovered piece. The provisioners are not software, so a
+#   provisioner name resolves to no software file and is reported as a read error
+#   like any other unknown name. Each piece's status word is read once
+#   (software::status_of) and handed to the table (software::status_table),
+#   which maps it to the boolean columns. The managed column comes from the state
+#   store's ownership marker (state::owned), set only when our own install and
+#   configure succeeded, not from the status word, so software present by other means
+#   (an apt install by hand) reads as installed but not managed. A piece whose status
+#   cannot be read (a bad name with no executable) is reported as an error on stderr
+#   and does not abandon the rest; the worst exit status seen is returned. Writes the
+#   report to stdout and any diagnostics to stderr.
+#
+# Arguments:
+#   [name]...  Zero or more software names; when none, every discovered piece is reported
+#
+# Returns:
+#   0 when every unit was reported
+#   N the worst exit status seen across the units
+#
+# Example:
+#   software::status_report git tree
+#--------------------------------------------------
+software::status_report() {
+    local -i exit_status
+    local -i failure
+    local listing
+    local -i managed
+    local name
+    local -a names
+    local -a software
+    local word
+
+    if (($# > 0))
+    then
+        names=("$@")
+    else
+        listing="$(software::discover)"
+        names=()
+        [[ -z "$listing" ]] || mapfile -t names <<<"$listing"
+    fi
+
+    # Read each piece's status once. A piece whose status cannot be read is reported
+    # and skipped, the worst status carried out. A software line also carries its
+    # managed flag: the state store's ownership marker (state::owned), set only when
+    # our own install and configure succeeded, rather than the unit's is_managed word
+    # - which for a package only asks whether the package is present, so an apt install
+    # by hand would satisfy it and wrongly read as managed.
+    exit_status=0
+    software=()
+    for name in "${names[@]}"
+    do
+        if word="$(software::status_of "$name")"
+        then
+            managed=0
+            ! state::owned "$name" || managed=1
+            software+=("$(printf '%s\t%s\t%d' "$name" "$word" "$managed")")
+        else
+            failure=$?
+            output::fatal "could not read the status of '$name'."
+            ((failure <= exit_status)) || exit_status=$failure
+        fi
+    done
+
+    if ((${#software[@]} > 0))
+    then
+        printf '%s\n' "${software[@]}" | software::status_table
+    fi
+
+    return "$exit_status"
+}
+[[ -v TEST_FLAG ]] || readonly -f software::status_report
+
 # ─── Constants / globals ────────────────────────────────────────────────────────
 
 # This library's own directory, so the sibling libraries are sourced regardless of
