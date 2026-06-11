@@ -1,0 +1,303 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# The orchestrator. Discovers the software in libexec/, presents a checklist of the
+# pieces this host can run, and drives install/uninstall/status across the whole set.
+# The only thing it discovers and selects is software: the per-OS file
+# libexec/<os>_<version>/software/<name>.sh, the OS token resolved here through
+# lib/os.sh. The default interactive flow ticks the software to set up, then runs
+# three phases: collect every piece's inputs, refresh the host package manager,
+# install and configure each piece. After the software it runs the post-install
+# provisioners (the workspace and the dotfiles): a fixed pair, not software but
+# personal configuration the toolkit applies last, driven in-process through the
+# framework (lib/provisioner.sh) rather than from any executable of their own. They
+# are never discovered or listed beside the software; the interactive flow offers them
+# their own toggle menu after the install, and provisions the ones left ticked. A
+# provisioner gathers its one input when it runs (so the installer location is asked
+# right before it runs) and fetches and runs the repository's installer script, last,
+# on top of the freshly installed tools; that script downloads the repository and lays
+# it down on its own. There is no ordering between software pieces; the provisioners
+# run in a fixed order (the workspace before the dotfiles). A named, unattended run
+# installs exactly the named software and never touches the provisioners. Removal is a
+# separate action (uninstall) and covers software only: it stages the same way (collect
+# inputs, then unconfigure and uninstall); the provisioners own no checkout and have
+# nothing to remove.
+#
+# This file is the flow only: the software mechanics and menus live in lib/software.sh
+# and the provisioner menu and run in lib/provisioner.sh.
+
+# ─── Functions ────────────────────────────────────────────────────────────────
+
+#--------------------------------------------------
+# Function:
+#   machine_setup::usage
+#
+# Description:
+#   Prints the usage reference to stdout.
+#
+# Arguments:
+#   N/A
+#
+# Returns:
+#   0 always
+#
+# Example:
+#   machine_setup::usage
+#--------------------------------------------------
+machine_setup::usage() {
+    cat <<'EOF'
+Usage: machine-setup [install] [name...]
+       machine-setup uninstall [name...]
+       machine-setup status [name...]
+
+Set up this machine: select the software, collect its inputs, then install or update
+and configure it, then run the post-install provisioners. Removing software is a
+separate, explicit action: uninstall.
+
+With no names, install opens an interactive checklist of the software this host can
+run (pre-ticked from a previous run, or every available piece on a first run) for you
+to adjust; after the install it offers a second toggle menu for the workspace and
+dotfiles provisioners (both ticked) and runs the ones you leave ticked. uninstall with
+no names opens a checklist of the installed software, every entry unticked and labelled
+with its current status, for you to pick what to remove. Given one or more names either
+action skips the menus and acts on exactly that software, for an unattended run; a
+named install never touches the provisioners. With no terminal the menus fall back to
+their ticked sets (install to its pre-ticked software then both provisioners, uninstall
+to nothing).
+
+  machine-setup                 Choose software interactively, set it up, then provision.
+  machine-setup tree git        Set up the named software unattended (no provisioners).
+  machine-setup uninstall       Choose installed software to remove from a menu.
+  machine-setup uninstall tree  Unconfigure and remove the named software.
+  machine-setup status [name]   Report a status table of the software.
+
+Software is the per-OS file libexec/<os>_<version>/software/<name>.sh, the host OS
+resolved by the orchestrator. A piece reports 'unavailable' on a host it cannot run on
+(for example a GUI app on a headless host) and is left out of the menu.
+
+The workspace and dotfiles provisioners are not software and are never listed beside
+it: they are a fixed post-install step of the interactive flow that fetches a
+self-contained installer script and runs it, last, so the personal configuration
+lands on top of the freshly installed tools; the script downloads its repository and
+lays it down on its own. They own no executable and run only through this flow, never
+a named run. A provisioner asks for its one input when it runs, not up front: where
+the installer comes from (blank keeps the default), either an URL fetched to a
+temporary file and run (with wget or curl) or a path to a local executable. The
+earlier identity toolkit (SSH/GPG keygen, gitconfig wiring, the secret store) now
+lives in those external repos.
+
+Environment:
+  MACHINE_SETUP_LIBEXEC_DIR  Directory holding the per-OS software executables (default: ../libexec).
+  MACHINE_SETUP_SHARE_DIR    Directory holding share/machine-setup/<name>/description.
+  WORKSPACE_INSTALLER        Installer the workspace fetches and runs (the workspace provisioner input).
+  DOTFILES_INSTALLER         Installer the dotfiles fetch and run (the dotfiles provisioner input).
+  XDG_STATE_HOME             Where the state store (managed markers, inputs) lives.
+  <NAME>_<INPUT>             Pre-set a software input to keep the run unattended.
+EOF
+}
+[[ -v TEST_FLAG ]] || readonly -f machine_setup::usage
+
+#--------------------------------------------------
+# Function:
+#   machine_setup::install [name]...
+#
+# Description:
+#   Runs the full set-up end to end. With no names it resolves the software
+#   interactively (software::install::pick), installs it (software::install), then offers the
+#   post-install provisioner toggle menu (provisioner::choose, both ticked) and runs
+#   the ones left ticked (provisioner::provision_all). With one or more names it
+#   installs exactly that software, unattended, and never touches the provisioners; a
+#   provisioner name is not software and resolves to no software file, so it fails like
+#   any other unknown name. Each selection is gathered before its phase acts.
+#   Deselecting a piece never removes it: removal is a separate, explicit action
+#   (uninstall). Carries every side effect of the set-up (the menus, prompting for
+#   inputs, installing and configuring the software, then running the provisioners).
+#   The worst status across the install and the provisioning is returned.
+#
+# Arguments:
+#   [name]...  Zero or more software names; none triggers the interactive flow
+#
+# Returns:
+#   0 when the set-up succeeded
+#   N the worst status from the install and the provisioning
+#
+# Example:
+#   machine_setup::install tree git
+#--------------------------------------------------
+machine_setup::install() {
+    local -i failure
+    local -a selected
+    local selection
+    local -i status
+
+    # Own the run's session (warning and clearing a leftover one) before any menu,
+    # so every subprocess inherits it and the lock is held for the whole run.
+    session::begin || return $?
+
+    if (($# > 0))
+    then
+        # A named, unattended run installs exactly the named software and never
+        # touches the provisioners; a provisioner name is not software and resolves
+        # to no software file, failing like any other unknown name.
+        #
+        # Capture the worst status through ||, never on a following line: the helper
+        # returns the worst exit status it saw, and under set -e a bare call that
+        # returns non-zero would abort here, skipping both the capture and the
+        # session::end below. The || keeps set -e from firing and still records it.
+        status=0
+        software::install "$@" || status=$?
+    else
+        selection="$(software::install::pick)"
+        selected=()
+        [[ -z "$selection" ]] || mapfile -t selected <<<"$selection"
+
+        # Capture through || so set -e does not abort on a non-zero worst status
+        # before the provisioners and session::end below get to run.
+        status=0
+        software::install "${selected[@]}" || status=$?
+
+        # The post-install step: offer the provisioner toggle menu (both ticked),
+        # then run the ones left ticked, last, on top of the freshly installed tools.
+        selection="$(provisioner::choose)"
+        selected=()
+        [[ -z "$selection" ]] || mapfile -t selected <<<"$selection"
+
+        if ((${#selected[@]} > 0))
+        then
+            failure=0
+            provisioner::provision_all "${selected[@]}" || failure=$?
+            ((failure <= status)) || status=$failure
+        fi
+    fi
+
+    # Close the session (clearing the working area) on the way out, whichever path
+    # we leave by.
+    session::end
+
+    return "$status"
+}
+[[ -v TEST_FLAG ]] || readonly -f machine_setup::install
+
+#--------------------------------------------------
+# Function:
+#   machine_setup::uninstall [name]...
+#
+# Description:
+#   Removes software, the inverse of the set-up flow. With one or more names it
+#   reverses exactly that software, unattended. With no names it opens the removal
+#   menu (software::uninstall::pick over every removable piece - each unticked and
+#   labelled with its current status) and reverses only the software the user ticks;
+#   with no terminal the menu resolves to nothing, so an unattended run removes
+#   nothing. The removal itself runs through software::uninstall (unconfigure then
+#   uninstall per piece, worst-status semantics). The provisioners own no checkout, so
+#   removal covers software only. Carries the side effects of the menu and of removing
+#   the software.
+#
+# Arguments:
+#   [name]...  Zero or more software names; none opens the interactive removal menu
+#
+# Returns:
+#   0 when every piece was reversed or none were chosen
+#   N propagated from software::uninstall
+#
+# Example:
+#   machine_setup::uninstall git
+#--------------------------------------------------
+machine_setup::uninstall() {
+    local removal
+    local -a removals
+    local -i status
+
+    session::begin || return $?
+
+    if (($# > 0))
+    then
+        removals=("$@")
+    else
+        removal="$(software::uninstall::pick)"
+        removals=()
+        [[ -z "$removal" ]] || mapfile -t removals <<<"$removal"
+    fi
+
+    # Capture through || so set -e does not abort on a non-zero worst status before
+    # session::end runs.
+    status=0
+    software::uninstall "${removals[@]}" || status=$?
+
+    session::end
+
+    return "$status"
+}
+[[ -v TEST_FLAG ]] || readonly -f machine_setup::uninstall
+
+# ─── Main ─────────────────────────────────────────────────────────────────────
+
+#--------------------------------------------------
+# Function:
+#   machine_setup::main [install [name...] | uninstall [name...] | status [name...]]
+#
+# Description:
+#   Entry point. With -h, --help, or help it prints usage. The first argument is
+#   an action: status reports the named software's status (or every piece when none
+#   are named); uninstall reverses the named software (or opens the interactive
+#   removal menu when none are named); install (the default when the first argument
+#   is not a reserved action) runs the full set-up over the named software, or
+#   interactively when none are named. Prints usage to stdout for help; the set-up,
+#   removal, and status side effects are those of their handlers.
+#
+# Arguments:
+#   install [name]...    Set up the named software (or interactively when none named)
+#   uninstall [name]...  Remove the named software (or interactively when none named)
+#   status [name]...     Report the named software's status (or every piece when none)
+#
+# Returns:
+#   0 on success or after printing help
+#   N propagated from the chosen handler
+#
+# Example:
+#   machine_setup::main install tree
+#--------------------------------------------------
+machine_setup::main() {
+    case "${1:-}" in
+        -h | --help | help)
+            machine_setup::usage
+
+            return 0
+            ;;
+        status)
+            shift
+            software::status_report "$@"
+            ;;
+        install)
+            shift
+            machine_setup::install "$@"
+            ;;
+        uninstall)
+            shift
+            machine_setup::uninstall "$@"
+            ;;
+        *)
+            # No reserved action: the arguments (if any) are software names to
+            # set up, and no arguments means the interactive set-up.
+            machine_setup::install "$@"
+            ;;
+    esac
+}
+
+# ─── Constants / globals ────────────────────────────────────────────────────────
+
+# This script's directory and the repository root, resolved to absolute paths so
+# the orchestrator sources its libraries regardless of the caller's working
+# directory. Made readonly outside tests so specs can reassign.
+ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+[[ -v TEST_FLAG ]] || readonly ROOT
+
+# ─── Imports ──────────────────────────────────────────────────────────────────
+# shellcheck source=lib/provisioner.sh
+source "$ROOT/lib/provisioner.sh"
+# shellcheck source=lib/session.sh
+source "$ROOT/lib/session.sh"
+# shellcheck source=lib/software.sh
+source "$ROOT/lib/software.sh"
+
+# ─── Execute ──────────────────────────────────────────────────────────────────
+[[ "${BASH_SOURCE[0]}" != "$0" ]] || machine_setup::main "$@"
