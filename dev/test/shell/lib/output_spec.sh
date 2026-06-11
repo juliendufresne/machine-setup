@@ -69,4 +69,124 @@ Describe 'lib/output.sh'
 
     End
 
+    # ==========================================================================
+    # output::success
+    # ==========================================================================
+    Describe 'output::success'
+
+        It 'writes an indented check line'
+            When call output::success 'Installing the git package'
+            The status should be success
+            The stdout should equal '  ✓ Installing the git package'
+            The stderr should be blank
+        End
+
+        It 'colours the check line green on a terminal'
+            output::color_enabled() { return 0; }
+
+            When call output::success 'Installing the git package'
+            The status should be success
+            The stdout should include '0;32m'
+            The stdout should include '✓ Installing the git package'
+            The stderr should be blank
+        End
+
+    End
+
+    # ==========================================================================
+    # output::info
+    # ==========================================================================
+    Describe 'output::info'
+
+        It 'writes an indented bullet line'
+            When call output::info 'already installed'
+            The status should be success
+            The stdout should equal '  • already installed'
+            The stderr should be blank
+        End
+
+        It 'dims the bullet line on a terminal'
+            output::color_enabled() { return 0; }
+
+            When call output::info 'already installed'
+            The status should be success
+            The stdout should include '[2m'
+            The stdout should include '• already installed'
+            The stderr should be blank
+        End
+
+    End
+
+    # ==========================================================================
+    # output::warn
+    # ==========================================================================
+    Describe 'output::warn'
+
+        It 'writes an indented warning line to stderr'
+            When call output::warn 'git is still present; it may be installed by other means'
+            The status should be success
+            The stdout should be blank
+            The stderr should equal '  ! git is still present; it may be installed by other means'
+        End
+
+        It 'colours the warning line yellow on a terminal'
+            output::color_enabled() { return 0; }
+
+            When call output::warn 'git is still present'
+            The status should be success
+            The stdout should be blank
+            The stderr should include '0;33m'
+            The stderr should include '! git is still present'
+        End
+
+    End
+
+    # ==========================================================================
+    # output::error
+    # ==========================================================================
+    Describe 'output::error'
+
+        It 'writes an indented cross line to stderr'
+            When call output::error 'Installing the git package'
+            The status should be success
+            The stdout should be blank
+            The stderr should equal '  ✗ Installing the git package'
+        End
+
+        It 'colours the cross line red on a terminal'
+            output::color_enabled() { return 0; }
+
+            When call output::error 'Installing the git package'
+            The status should be success
+            The stdout should be blank
+            The stderr should include '0;31m'
+            The stderr should include '✗ Installing the git package'
+        End
+
+    End
+
+    # ==========================================================================
+    # output::fatal
+    # ==========================================================================
+    Describe 'output::fatal'
+
+        It 'writes a flush-left error line to stderr'
+            When call output::fatal 'requirements not met'
+            The status should be success
+            The stdout should be blank
+            The stderr should equal 'error: requirements not met'
+        End
+
+        It 'colours the error line red on a terminal'
+            output::color_enabled() { return 0; }
+
+            When call output::fatal 'requirements not met'
+            The status should be success
+            The stdout should be blank
+            The stderr should include '0;31m'
+            The stderr should include 'error: requirements not met'
+        End
+
+    End
+
 End
