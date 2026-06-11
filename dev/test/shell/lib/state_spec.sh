@@ -461,4 +461,205 @@ Describe 'lib/state.sh'
 
     End
 
+    # ==========================================================================
+    # state::own
+    # ==========================================================================
+    Describe 'state::own'
+
+        It 'records that we installed a unit'
+            When call state::own git
+            The status should be success
+            The stdout should be blank
+            The stderr should be blank
+            The file "$XDG_STATE_HOME/machine-setup/managed/git" should be exist
+        End
+
+    End
+
+    # ==========================================================================
+    # state::disown
+    # ==========================================================================
+    Describe 'state::disown'
+
+        It 'removes the owned marker'
+            state::own git
+
+            When call state::disown git
+            The status should be success
+            The stdout should be blank
+            The stderr should be blank
+            The path "$XDG_STATE_HOME/machine-setup/managed/git" should not be exist
+        End
+
+    End
+
+    # ==========================================================================
+    # state::owned
+    # ==========================================================================
+    Describe 'state::owned'
+
+        It 'is true when the unit has an owned marker'
+            state::own git
+
+            When call state::owned git
+            The status should be success
+            The stdout should be blank
+            The stderr should be blank
+        End
+
+        It 'is false when the unit has no owned marker'
+            When call state::owned git
+            The status should be failure
+            The stdout should be blank
+            The stderr should be blank
+        End
+
+    End
+
+    # ==========================================================================
+    # state::remember
+    # ==========================================================================
+    Describe 'state::remember'
+
+        runner::unit_name() { printf 'git'; }
+
+        It 'records the prior value of a configuration variable'
+            When call state::remember user.name 'Ada'
+            The status should be success
+            The stdout should be blank
+            The stderr should be blank
+            The contents of file "$XDG_STATE_HOME/machine-setup/config/git/user.name" should equal 'Ada'
+        End
+
+        It 'keeps the first recorded value when called again'
+            state::remember user.name 'Ada'
+
+            When call state::remember user.name 'Grace'
+            The status should be success
+            The stdout should be blank
+            The stderr should be blank
+            The contents of file "$XDG_STATE_HOME/machine-setup/config/git/user.name" should equal 'Ada'
+        End
+
+    End
+
+    # ==========================================================================
+    # state::recall
+    # ==========================================================================
+    Describe 'state::recall'
+
+        runner::unit_name() { printf 'git'; }
+
+        It 'prints a remembered prior value'
+            state::remember user.name 'Ada'
+
+            When call state::recall user.name
+            The status should be success
+            The stdout should equal 'Ada'
+            The stderr should be blank
+        End
+
+        It 'prints nothing when no value was recorded'
+            When call state::recall user.name
+            The status should be success
+            The stdout should be blank
+            The stderr should be blank
+        End
+
+    End
+
+    # ==========================================================================
+    # state::created
+    # ==========================================================================
+    Describe 'state::created'
+
+        It 'appends the path to the instance manifest'
+            When call state::created 'workspaces/api@/srv/api' /srv/api/.git
+            The status should be success
+            The stdout should be blank
+            The stderr should be blank
+            The contents of file "$XDG_STATE_HOME/machine-setup/manifests/workspaces_api@_srv_api" should equal '/srv/api/.git'
+        End
+
+        It 'appends additional paths on later calls'
+            state::created 'workspaces/api@/srv/api' /srv/api/.git
+
+            When call state::created 'workspaces/api@/srv/api' /srv/api/README
+            The status should be success
+            The stdout should be blank
+            The stderr should be blank
+            The contents of file "$XDG_STATE_HOME/machine-setup/manifests/workspaces_api@_srv_api" should equal "$(printf '/srv/api/.git\n/srv/api/README')"
+        End
+
+    End
+
+    # ==========================================================================
+    # state::forget
+    # ==========================================================================
+    Describe 'state::forget'
+
+        It 'removes the instance manifest'
+            state::created 'workspace@personal' /srv/personal/.gitconfig
+
+            When call state::forget 'workspace@personal'
+            The status should be success
+            The stdout should be blank
+            The stderr should be blank
+            The path "$XDG_STATE_HOME/machine-setup/manifests/workspace@personal" should not be exist
+        End
+
+        It 'is a no-op when no manifest was recorded'
+            When call state::forget 'workspace@personal'
+            The status should be success
+            The stdout should be blank
+            The stderr should be blank
+        End
+
+    End
+
+    # ==========================================================================
+    # state::contains_only_created
+    # ==========================================================================
+    Describe 'state::contains_only_created'
+
+        It 'is true when every path under the root was recorded'
+            root="$SHELLSPEC_TMPBASE/ws"
+            mkdir -p "$root"
+            : >"$root/a"
+            : >"$root/b"
+            state::created ws "$root/a"
+            state::created ws "$root/b"
+
+            When call state::contains_only_created ws "$root"
+            The status should be success
+            The stdout should be blank
+            The stderr should be blank
+        End
+
+        It 'is false when no manifest was recorded for the instance'
+            root="$SHELLSPEC_TMPBASE/ws"
+            mkdir -p "$root"
+            : >"$root/a"
+
+            When call state::contains_only_created ws "$root"
+            The status should be failure
+            The stdout should be blank
+            The stderr should be blank
+        End
+
+        It 'is false when a foreign path exists under the root'
+            root="$SHELLSPEC_TMPBASE/ws"
+            mkdir -p "$root"
+            : >"$root/a"
+            : >"$root/foreign"
+            state::created ws "$root/a"
+
+            When call state::contains_only_created ws "$root"
+            The status should be failure
+            The stdout should be blank
+            The stderr should be blank
+        End
+
+    End
+
 End
