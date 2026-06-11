@@ -1,0 +1,303 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# The neovim unit's configuration contract: unit::is_configured, unit::configure,
+# and unit::unconfigure, plus the local helpers and constants they share. It makes
+# the vi, vim, and editor commands resolve to neovim through update-alternatives,
+# the host-wide mechanism that already arbitrates them, so the choice holds in every
+# shell and for any script that calls them, not just an interactive prompt. The
+# `editor` group is the system default editor (`/usr/bin/editor`), what tools fall
+# back to when $EDITOR is unset; note that update-alternatives does not set the
+# $EDITOR variable itself, which is a shell setting and belongs in the dotfiles. The
+# neovim package registers no alternatives of its own, so configure both registers
+# nvim in each group and selects it; unconfigure removes those entries, which drops
+# each selection back to the distro default in one step.
+#
+# update-alternatives ships with dpkg, so this fragment is Debian-family specific,
+# not OS independent - hence the debian-family/ directory it lives in
+# (lib/software/neovim/debian-family/configure). It is shared by every
+# Debian-family per-OS target (Ubuntu today), each of which sources it before
+# lib/runner.sh; a non-Debian target would need its own configuration (RHEL's
+# `alternatives`, say) under a differently-named sibling directory. The runner then
+# keeps its own no-op config defaults out of the way. Sourced, never executed; it
+# relies on lib/output.sh (output::run) being available by the time these run,
+# which the runner guarantees, and on sudo for the mutating update-alternatives
+# calls, which the unit's request_inputs has already warmed.
+
+! declare -F neovim::nvim_path &>/dev/null || return 0
+
+# ─── Functions ────────────────────────────────────────────────────────────────
+# Local helpers for the editor alternatives this unit manages through update-alternatives.
+
+#--------------------------------------------------
+# Function:
+#   neovim::nvim_path
+#
+# Description:
+#   Prints the absolute path of the nvim binary on this host, as resolved on PATH,
+#   which is the value each managed alternative is pointed at. Resolved at call time
+#   so tests can stub it. Writes the path to stdout, or nothing when nvim is absent.
+#
+# Arguments:
+#   N/A
+#
+# Returns:
+#   0 when nvim resolves on PATH
+#   1 when nvim resolves nowhere
+#
+# Example:
+#   neovim::nvim_path
+#--------------------------------------------------
+neovim::nvim_path() {
+    command -v nvim
+}
+[[ -v TEST_FLAG ]] || readonly -f neovim::nvim_path
+
+#--------------------------------------------------
+# Function:
+#   neovim::alt_value <group>
+#
+# Description:
+#   Prints the binary the <group> alternative currently resolves to - the Value
+#   field of `update-alternatives --query <group>` - or nothing when the group does
+#   not exist. The query's diagnostics are discarded, so only the bare path reaches
+#   stdout.
+#
+# Arguments:
+#   <group>  The alternatives group to inspect (vi, vim, or editor)
+#
+# Returns:
+#   0 on success
+#
+# Example:
+#   neovim::alt_value vi
+#--------------------------------------------------
+neovim::alt_value() {
+    local group
+
+    group="$1"
+
+    update-alternatives --query "$group" 2>/dev/null | awk '/^Value:/ { print $2; exit }'
+}
+[[ -v TEST_FLAG ]] || readonly -f neovim::alt_value
+
+#--------------------------------------------------
+# Function:
+#   neovim::alt_registered <group>
+#
+# Description:
+#   Reports whether nvim is one of the alternatives registered for <group>, that is
+#   whether it appears in `update-alternatives --list <group>`. This is what
+#   configure adds and unconfigure removes, so it marks whether our entry is in
+#   place regardless of which alternative is currently selected. grep's output is
+#   discarded, so nothing is written to stdout or stderr.
+#
+# Arguments:
+#   <group>  The alternatives group to inspect (vi, vim, or editor)
+#
+# Returns:
+#   0 when nvim is registered for <group>
+#   1 when it is not (or nvim is absent)
+#
+# Example:
+#   neovim::alt_registered vi
+#--------------------------------------------------
+neovim::alt_registered() {
+    local group
+    local nvim
+
+    group="$1"
+    nvim="$(neovim::nvim_path)" || return 1
+    [[ -n "$nvim" ]] || return 1
+
+    update-alternatives --list "$group" 2>/dev/null | grep -qxF -- "$nvim"
+}
+[[ -v TEST_FLAG ]] || readonly -f neovim::alt_registered
+
+#--------------------------------------------------
+# Function:
+#   neovim::register_alt <group>
+#
+# Description:
+#   Registers nvim in the <group> alternatives group and selects it, so <group>
+#   resolves to neovim. The --install adds nvim as a choice (idempotent: re-running
+#   just refreshes the same entry) at a priority above the distro's vim, and the
+#   --set pins it as the manual choice so it wins regardless of any auto-mode
+#   arithmetic. Both edit the system alternatives database, so they need root through
+#   sudo, which the unit's request_inputs has warmed. Writes update-alternatives'
+#   own diagnostics, which output::run captures and reveals only on failure.
+#
+# Arguments:
+#   <group>  The alternatives group to point at neovim (vi, vim, or editor)
+#
+# Returns:
+#   0 on success
+#   the failing update-alternatives call's exit status
+#
+# Example:
+#   neovim::register_alt vi
+#--------------------------------------------------
+neovim::register_alt() {
+    local group
+    local nvim
+
+    group="$1"
+    nvim="$(neovim::nvim_path)"
+
+    sudo update-alternatives --install "/usr/bin/$group" "$group" "$nvim" "$NEOVIM_ALT_PRIORITY" \
+        && sudo update-alternatives --set "$group" "$nvim"
+}
+[[ -v TEST_FLAG ]] || readonly -f neovim::register_alt
+
+#--------------------------------------------------
+# Function:
+#   neovim::deregister_alt <group>
+#
+# Description:
+#   Removes nvim from the <group> alternatives group. update-alternatives drops the
+#   entry and, when nvim was the selected value, recomputes the group's selection
+#   from what remains (the distro's vim), so this single call both undoes our
+#   selection and undoes our registration. It edits the system alternatives
+#   database, so it needs root through sudo, which the unit's request_inputs has
+#   warmed. Writes update-alternatives' own diagnostics, which output::run captures
+#   and reveals only on failure.
+#
+# Arguments:
+#   <group>  The alternatives group to release (vi, vim, or editor)
+#
+# Returns:
+#   0 on success
+#   update-alternatives' exit status on failure
+#
+# Example:
+#   neovim::deregister_alt vi
+#--------------------------------------------------
+neovim::deregister_alt() {
+    local group
+
+    group="$1"
+
+    sudo update-alternatives --remove "$group" "$(neovim::nvim_path)"
+}
+[[ -v TEST_FLAG ]] || readonly -f neovim::deregister_alt
+
+# ─── Runner contracts ─────────────────────────────────────────────────────────
+# The configuration part of the unit::* interface, overriding the runner's no-op
+# defaults because this unit configures something.
+
+#--------------------------------------------------
+# Function:
+#   unit::is_configured
+#
+# Description:
+#   Reports whether every managed command (NEOVIM_ALT_GROUPS: vi, vim, editor)
+#   resolves to neovim. It is configured when each group's current value is the nvim
+#   binary (neovim::alt_value matches neovim::nvim_path); any group pointing
+#   elsewhere, or no nvim at all, is not configured. Writes nothing.
+#
+# Arguments:
+#   N/A
+#
+# Returns:
+#   0 when every managed command resolves to neovim
+#   1 otherwise
+#
+# Example:
+#   unit::is_configured
+#--------------------------------------------------
+unit::is_configured() {
+    local group
+    local nvim
+
+    nvim="$(neovim::nvim_path)" || return 1
+    [[ -n "$nvim" ]] || return 1
+
+    for group in "${NEOVIM_ALT_GROUPS[@]}"
+    do
+        [[ "$(neovim::alt_value "$group")" == "$nvim" ]] || return 1
+    done
+
+    return 0
+}
+[[ -v TEST_FLAG ]] || readonly -f unit::is_configured
+
+#--------------------------------------------------
+# Function:
+#   unit::configure
+#
+# Description:
+#   Points every managed command (NEOVIM_ALT_GROUPS: vi, vim, editor) at neovim.
+#   For each group that does not already resolve to nvim it registers and selects
+#   nvim (neovim::register_alt) behind an output::run line; a group that already
+#   resolves to nvim is skipped, so re-running is idempotent. Writes a result line
+#   per group changed to stdout.
+#
+# Arguments:
+#   N/A
+#
+# Returns:
+#   0 on success
+#   the failing step's exit status when an edit fails
+#
+# Example:
+#   unit::configure
+#--------------------------------------------------
+unit::configure() {
+    local group
+    local nvim
+
+    nvim="$(neovim::nvim_path)"
+
+    for group in "${NEOVIM_ALT_GROUPS[@]}"
+    do
+        [[ "$(neovim::alt_value "$group")" == "$nvim" ]] && continue
+
+        output::run "Pointing the $group command at neovim" neovim::register_alt "$group" || return $?
+    done
+}
+[[ -v TEST_FLAG ]] || readonly -f unit::configure
+
+#--------------------------------------------------
+# Function:
+#   unit::unconfigure
+#
+# Description:
+#   Restores every managed command (NEOVIM_ALT_GROUPS: vi, vim, editor) to its
+#   pre-configure state by removing our nvim entry from each group
+#   (neovim::deregister_alt) where it is present (neovim::alt_registered), behind an
+#   output::run line. With nvim removed a group falls back to the distro default. A
+#   group without our entry is skipped, so this is idempotent. Writes a result line
+#   per group changed to stdout.
+#
+# Arguments:
+#   N/A
+#
+# Returns:
+#   0 on success
+#   the failing step's exit status when an edit fails
+#
+# Example:
+#   unit::unconfigure
+#--------------------------------------------------
+unit::unconfigure() {
+    local group
+
+    for group in "${NEOVIM_ALT_GROUPS[@]}"
+    do
+        neovim::alt_registered "$group" || continue
+
+        output::run "Restoring the $group command to its default" neovim::deregister_alt "$group" || return $?
+    done
+}
+[[ -v TEST_FLAG ]] || readonly -f unit::unconfigure
+
+# ─── Constants / globals ────────────────────────────────────────────────────────
+
+# The alternatives groups this unit points at neovim and the priority it registers
+# nvim at. The groups are the editor commands update-alternatives arbitrates: `vi`
+# and `vim` (the editors), and `editor` (the system default editor used when $EDITOR
+# is unset). Each group's link is the canonical /usr/bin/<group> path. The priority
+# sits above the distro's vim (30) so nvim is preferred even if a group is ever
+# returned to auto mode, though configure also selects it manually.
+NEOVIM_ALT_GROUPS=(vi vim editor)
+NEOVIM_ALT_PRIORITY=60
+[[ -v TEST_FLAG ]] || readonly NEOVIM_ALT_GROUPS NEOVIM_ALT_PRIORITY
