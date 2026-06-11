@@ -107,6 +107,180 @@ output::log() {
 }
 [[ -v TEST_FLAG ]] || readonly -f output::log
 
+#--------------------------------------------------
+# Function:
+#   output::success <message>
+#
+# Description:
+#   Writes an indented success line, "  ✓ <message>", beneath the current stage,
+#   rendered green when stdout is a terminal. Reports a command that completed.
+#   Writes to stdout.
+#
+# Arguments:
+#   <message>  Text to print
+#
+# Returns:
+#   0 on success
+#
+# Example:
+#   output::success 'Installing the git package'
+#--------------------------------------------------
+output::success() {
+    local message
+
+    message="$1"
+
+    if output::color_enabled 1
+    then
+        printf '%s%b%s %s%b\n' "$OUTPUT_INDENT" "$OUTPUT_GREEN" "$OUTPUT_GLYPH_SUCCESS" "$message" "$OUTPUT_RESET"
+
+        return 0
+    fi
+
+    printf '%s%s %s\n' "$OUTPUT_INDENT" "$OUTPUT_GLYPH_SUCCESS" "$message"
+}
+[[ -v TEST_FLAG ]] || readonly -f output::success
+
+#--------------------------------------------------
+# Function:
+#   output::info <message>
+#
+# Description:
+#   Writes an indented info line, "  • <message>", beneath the current stage,
+#   rendered dim when stdout is a terminal. The neutral level for routine
+#   progress (already installed, nothing to do). Writes to stdout.
+#
+# Arguments:
+#   <message>  Text to print
+#
+# Returns:
+#   0 on success
+#
+# Example:
+#   output::info 'already installed'
+#--------------------------------------------------
+output::info() {
+    local message
+
+    message="$1"
+
+    if output::color_enabled 1
+    then
+        printf '%s%b%s %s%b\n' "$OUTPUT_INDENT" "$OUTPUT_DIM" "$OUTPUT_GLYPH_INFO" "$message" "$OUTPUT_RESET"
+
+        return 0
+    fi
+
+    printf '%s%s %s\n' "$OUTPUT_INDENT" "$OUTPUT_GLYPH_INFO" "$message"
+}
+[[ -v TEST_FLAG ]] || readonly -f output::info
+
+#--------------------------------------------------
+# Function:
+#   output::warn <message>
+#
+# Description:
+#   Writes an indented warning line, "  ! <message>", beneath the current stage to
+#   stderr, rendered yellow when stderr is a terminal. Reports a non-fatal caution
+#   the user should see but that does not fail the run (for example software still
+#   present after an uninstall because it was installed by other means). Writes to
+#   stderr.
+#
+# Arguments:
+#   <message>  Text to print
+#
+# Returns:
+#   0 on success
+#
+# Example:
+#   output::warn 'git is still present; it may be installed by other means'
+#--------------------------------------------------
+output::warn() {
+    local message
+
+    message="$1"
+
+    if output::color_enabled 2
+    then
+        printf '%s%b%s %s%b\n' "$OUTPUT_INDENT" "$OUTPUT_YELLOW" "$OUTPUT_GLYPH_WARN" "$message" "$OUTPUT_RESET" >&2
+
+        return 0
+    fi
+
+    printf '%s%s %s\n' "$OUTPUT_INDENT" "$OUTPUT_GLYPH_WARN" "$message" >&2
+}
+[[ -v TEST_FLAG ]] || readonly -f output::warn
+
+#--------------------------------------------------
+# Function:
+#   output::error <message>
+#
+# Description:
+#   Writes an indented error line, "  ✗ <message>", beneath the current stage to
+#   stderr, rendered red when stderr is a terminal. Reports a command within a
+#   stage that failed. Writes to stderr.
+#
+# Arguments:
+#   <message>  Text to print
+#
+# Returns:
+#   0 on success
+#
+# Example:
+#   output::error 'Installing the git package'
+#--------------------------------------------------
+output::error() {
+    local message
+
+    message="$1"
+
+    if output::color_enabled 2
+    then
+        printf '%s%b%s %s%b\n' "$OUTPUT_INDENT" "$OUTPUT_RED" "$OUTPUT_GLYPH_ERROR" "$message" "$OUTPUT_RESET" >&2
+
+        return 0
+    fi
+
+    printf '%s%s %s\n' "$OUTPUT_INDENT" "$OUTPUT_GLYPH_ERROR" "$message" >&2
+}
+[[ -v TEST_FLAG ]] || readonly -f output::error
+
+#--------------------------------------------------
+# Function:
+#   output::fatal <message>
+#
+# Description:
+#   Writes a flush-left, program-level error to stderr as "error: <message>",
+#   rendered red when stderr is a terminal. Used for dispatch and usage failures
+#   that abort the run around a stage (requirements not met, an unknown action, no
+#   unit for the host, a missing input), as opposed to the in-stage command
+#   failures output::error reports. Writes to stderr.
+#
+# Arguments:
+#   <message>  Text to print
+#
+# Returns:
+#   0 on success
+#
+# Example:
+#   output::fatal 'requirements not met'
+#--------------------------------------------------
+output::fatal() {
+    local message
+
+    message="$1"
+
+    if output::color_enabled 2
+    then
+        printf '%berror: %s%b\n' "$OUTPUT_RED" "$message" "$OUTPUT_RESET" >&2
+
+        return 0
+    fi
+
+    printf 'error: %s\n' "$message" >&2
+}
+[[ -v TEST_FLAG ]] || readonly -f output::fatal
+
 # ─── Constants / globals ────────────────────────────────────────────────────────
 
 # ANSI escape sequences, emitted with printf '%b' and gated at the call site by
@@ -115,11 +289,21 @@ output::log() {
 OUTPUT_RESET='\033[0m'
 OUTPUT_BOLD='\033[1m'
 OUTPUT_MAGENTA='\033[1;35m'
-[[ -v TEST_FLAG ]] || readonly OUTPUT_RESET OUTPUT_BOLD OUTPUT_MAGENTA
+OUTPUT_GREEN='\033[0;32m'
+OUTPUT_DIM='\033[2m'
+OUTPUT_RED='\033[0;31m'
+OUTPUT_YELLOW='\033[0;33m'
+[[ -v TEST_FLAG ]] || readonly OUTPUT_RESET OUTPUT_BOLD OUTPUT_MAGENTA OUTPUT_GREEN OUTPUT_DIM OUTPUT_RED OUTPUT_YELLOW
 
-# Line vocabulary: the glyph that prefixes each heading. A run phase (output::log)
-# heads a group of stages with », a level above the per-unit stage ▶. Plain
-# ASCII-width marks so alignment holds across terminals.
+# Line vocabulary: the indent shared by every in-stage line and the glyph that
+# prefixes each. A run phase (output::log) heads a group of stages with », a level
+# above the per-unit stage ▶. Plain ASCII-width marks so alignment holds across
+# terminals.
+OUTPUT_INDENT='  '
 OUTPUT_GLYPH_PHASE='»'
 OUTPUT_GLYPH_STAGE='▶'
-[[ -v TEST_FLAG ]] || readonly OUTPUT_GLYPH_PHASE OUTPUT_GLYPH_STAGE
+OUTPUT_GLYPH_SUCCESS='✓'
+OUTPUT_GLYPH_INFO='•'
+OUTPUT_GLYPH_WARN='!'
+OUTPUT_GLYPH_ERROR='✗'
+[[ -v TEST_FLAG ]] || readonly OUTPUT_INDENT OUTPUT_GLYPH_PHASE OUTPUT_GLYPH_STAGE OUTPUT_GLYPH_SUCCESS OUTPUT_GLYPH_INFO OUTPUT_GLYPH_WARN OUTPUT_GLYPH_ERROR
