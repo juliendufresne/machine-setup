@@ -1,0 +1,367 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# The fish unit's configuration contract: unit::is_configured, unit::configure,
+# and unit::unconfigure, plus the local helpers and markers they share. This code
+# is identical across every OS target, so it is not a per-OS executable: it lives
+# here under lib/software/fish/, and each per-OS unit script sources it before
+# lib/runner.sh - which then keeps its own no-op config defaults out of the way.
+# Sourced, never executed; it relies on lib/output.sh (output::run) being
+# available by the time these run, which the runner guarantees.
+
+! declare -F fish::rc_files &>/dev/null || return 0
+
+# ─── Functions ────────────────────────────────────────────────────────────────
+# Local helpers for the hand-off block this unit manages inside shell rc files.
+
+#--------------------------------------------------
+# Function:
+#   fish::rc_files
+#
+# Description:
+#   Prints the interactive-shell rc files this unit may configure, one per line:
+#   the bash and zsh rc files under the caller's HOME. We do not install bash or
+#   zsh, so their rc files are configured only when they already exist; this list
+#   is the full set of candidates and the caller checks existence. Resolved from
+#   HOME at call time, not at source time, so tests can redirect HOME. Writes the
+#   paths to stdout.
+#
+# Arguments:
+#   N/A
+#
+# Returns:
+#   0 on success
+#
+# Example:
+#   fish::rc_files
+#--------------------------------------------------
+fish::rc_files() {
+    printf '%s\n' "$HOME/.bashrc" "$HOME/.zshrc"
+}
+[[ -v TEST_FLAG ]] || readonly -f fish::rc_files
+
+#--------------------------------------------------
+# Function:
+#   fish::default_shell
+#
+# Description:
+#   Prints the basename of the caller's login shell - the shell field of their
+#   passwd entry (for example "bash", "zsh", or "fish"). This is the shell a fresh
+#   terminal actually starts, which is the only one that needs to hand off to fish.
+#   Read from getent at call time so tests can stub it. Writes the name to stdout.
+#
+# Arguments:
+#   N/A
+#
+# Returns:
+#   0 on success
+#
+# Example:
+#   fish::default_shell
+#--------------------------------------------------
+fish::default_shell() {
+    local shell
+
+    shell="$(getent passwd "$(id -un)")"   # full passwd line for this user
+    shell="${shell##*:}"                    # the login shell path (last field)
+    shell="${shell##*/}"                    # its basename
+
+    printf '%s\n' "$shell"
+}
+[[ -v TEST_FLAG ]] || readonly -f fish::default_shell
+
+#--------------------------------------------------
+# Function:
+#   fish::default_rc
+#
+# Description:
+#   Prints the rc file of the caller's login shell (fish::default_shell), when that
+#   shell is one we manage: the bash or zsh rc under HOME. Prints nothing when the
+#   login shell is neither - already fish, or some shell we do not configure - so
+#   no rc is pointed at fish in that case. This is the single rc that configure
+#   adds the hand-off block to; every other candidate has it removed. Writes the
+#   path to stdout, or nothing.
+#
+# Arguments:
+#   N/A
+#
+# Returns:
+#   0 on success
+#
+# Example:
+#   fish::default_rc
+#--------------------------------------------------
+fish::default_rc() {
+    case "$(fish::default_shell)" in
+        bash) printf '%s\n' "$HOME/.bashrc" ;;
+        zsh)  printf '%s\n' "$HOME/.zshrc" ;;
+        *)    : ;;
+    esac
+}
+[[ -v TEST_FLAG ]] || readonly -f fish::default_rc
+
+#--------------------------------------------------
+# Function:
+#   fish::block
+#
+# Description:
+#   Prints the fish hand-off block - the begin marker, the guarded snippet, and the
+#   end marker - to stdout. The markers delimit exactly what configure adds so
+#   unconfigure can remove the same region. The snippet replaces the first
+#   interactive shell on a real terminal with fish (exec fish), and leaves
+#   non-interactive shells, shells already inside tmux, IDE shells, and nested
+#   shells (SHLVL > 1) untouched - so a JetBrains terminal keeps its own shell.
+#
+# Arguments:
+#   N/A
+#
+# Returns:
+#   0 on success
+#
+# Example:
+#   fish::block
+#--------------------------------------------------
+fish::block() {
+    printf '%s\n' "$FISH_BLOCK_BEGIN"
+    cat <<'EOF'
+if [[ $- == *i* ]] \
+   && [[ -t 0 && -t 1 ]] \
+   && [[ -z "$TMUX" ]] \
+   && [[ "$SHLVL" == 1 ]] \
+   && command -v fish >/dev/null
+then
+    exec fish
+fi
+EOF
+    printf '%s\n' "$FISH_BLOCK_END"
+}
+[[ -v TEST_FLAG ]] || readonly -f fish::block
+
+#--------------------------------------------------
+# Function:
+#   fish::has_block <file>
+#
+# Description:
+#   Reports whether <file> already contains our hand-off block, by looking for the
+#   begin marker as a fixed string. grep's own output is discarded, so nothing is
+#   written to stdout or stderr.
+#
+# Arguments:
+#   <file>  Path to the rc file to inspect
+#
+# Returns:
+#   0 when the block is present
+#   1 when the block is absent
+#
+# Example:
+#   fish::has_block "$HOME/.bashrc"
+#--------------------------------------------------
+fish::has_block() {
+    local file
+
+    file="$1"
+
+    grep -qF -- "$FISH_BLOCK_BEGIN" "$file"
+}
+[[ -v TEST_FLAG ]] || readonly -f fish::has_block
+
+#--------------------------------------------------
+# Function:
+#   fish::add_block <file>
+#
+# Description:
+#   Prepends the hand-off block (fish::block) to the top of <file>, keeping the
+#   file's existing contents below it. Rewrites the file in place from a temporary
+#   copy rather than replacing it, so its inode and permissions are preserved. The
+#   caller ensures the file exists and does not already contain the block, so this
+#   is not itself idempotent. Writes nothing to stdout or stderr; its only effect
+#   is the file change.
+#
+# Arguments:
+#   <file>  Path to the rc file to edit
+#
+# Returns:
+#   0 on success
+#
+# Example:
+#   fish::add_block "$HOME/.bashrc"
+#--------------------------------------------------
+fish::add_block() {
+    local file
+    local tmp
+
+    file="$1"
+    tmp="$(mktemp)"
+
+    { fish::block; cat -- "$file"; } >"$tmp"
+    cat -- "$tmp" >"$file"
+    rm -f -- "$tmp"
+}
+[[ -v TEST_FLAG ]] || readonly -f fish::add_block
+
+#--------------------------------------------------
+# Function:
+#   fish::remove_block <file>
+#
+# Description:
+#   Removes our hand-off block (every line from the begin marker through the end
+#   marker) from <file>, leaving the rest of the file untouched. Rewrites the file
+#   in place from a temporary copy so its inode and permissions are preserved. The
+#   caller ensures the file exists and contains the block. Writes nothing to stdout
+#   or stderr; its only effect is the file change.
+#
+# Arguments:
+#   <file>  Path to the rc file to edit
+#
+# Returns:
+#   0 on success
+#
+# Example:
+#   fish::remove_block "$HOME/.bashrc"
+#--------------------------------------------------
+fish::remove_block() {
+    local file
+    local tmp
+
+    file="$1"
+    tmp="$(mktemp)"
+
+    sed "/$FISH_BLOCK_BEGIN/,/$FISH_BLOCK_END/d" "$file" >"$tmp"
+    cat -- "$tmp" >"$file"
+    rm -f -- "$tmp"
+}
+[[ -v TEST_FLAG ]] || readonly -f fish::remove_block
+
+# ─── Runner contracts ─────────────────────────────────────────────────────────
+# The configuration part of the unit::* interface, overriding the runner's no-op
+# defaults because this unit configures something.
+
+#--------------------------------------------------
+# Function:
+#   unit::is_configured
+#
+# Description:
+#   Reports whether the fish hand-off is in place. It is configured when the login
+#   shell's rc (fish::default_rc) carries the block and every other candidate rc
+#   (fish::rc_files) does not, so exactly the shell a fresh terminal starts hands
+#   off to fish. An rc file that does not exist does not count either way, and when
+#   the login shell is already fish (no default rc) every candidate must simply be
+#   clean. Writes nothing.
+#
+# Arguments:
+#   N/A
+#
+# Returns:
+#   0 when the default rc carries the block and the others do not
+#   1 otherwise
+#
+# Example:
+#   unit::is_configured
+#--------------------------------------------------
+unit::is_configured() {
+    local rc
+    local target
+
+    target="$(fish::default_rc)"
+
+    while read -r rc
+    do
+        [[ -f "$rc" ]] || continue
+
+        if [[ "$rc" == "$target" ]]
+        then fish::has_block "$rc" || return 1
+        else ! fish::has_block "$rc" || return 1
+        fi
+    done < <(fish::rc_files)
+
+    return 0
+}
+[[ -v TEST_FLAG ]] || readonly -f unit::is_configured
+
+#--------------------------------------------------
+# Function:
+#   unit::configure
+#
+# Description:
+#   Points the login shell at fish and cleans up the rest. The login shell's rc
+#   (fish::default_rc) gets the hand-off block prepended when it exists and lacks
+#   it; every other candidate rc (fish::rc_files) has the block removed when it
+#   carries one, so only the shell a fresh terminal starts ever execs fish. A
+#   missing rc file is skipped, never created, and re-running is idempotent. Writes
+#   a result line per file changed to stdout.
+#
+# Arguments:
+#   N/A
+#
+# Returns:
+#   0 on success
+#   the failing step's exit status when an edit fails
+#
+# Example:
+#   unit::configure
+#--------------------------------------------------
+unit::configure() {
+    local rc
+    local target
+
+    target="$(fish::default_rc)"
+
+    while read -r rc
+    do
+        [[ -f "$rc" ]] || continue
+
+        if [[ "$rc" == "$target" ]]
+        then
+            fish::has_block "$rc" && continue
+
+            output::run "Adding the fish hand-off block to ${rc##*/}" fish::add_block "$rc" || return $?
+        else
+            fish::has_block "$rc" || continue
+
+            output::run "Removing the fish hand-off block from ${rc##*/}" fish::remove_block "$rc" || return $?
+        fi
+    done < <(fish::rc_files)
+}
+[[ -v TEST_FLAG ]] || readonly -f unit::configure
+
+#--------------------------------------------------
+# Function:
+#   unit::unconfigure
+#
+# Description:
+#   Removes the fish hand-off block from every candidate rc file (fish::rc_files)
+#   that carries it, regardless of which shell is the login shell, behind an
+#   output::run line. A file with no block or no file at all is skipped, so this is
+#   idempotent. Writes a result line per file changed to stdout.
+#
+# Arguments:
+#   N/A
+#
+# Returns:
+#   0 on success
+#   the failing step's exit status when an edit fails
+#
+# Example:
+#   unit::unconfigure
+#--------------------------------------------------
+unit::unconfigure() {
+    local rc
+
+    while read -r rc
+    do
+        [[ -f "$rc" ]] || continue
+        fish::has_block "$rc" || continue
+
+        output::run "Removing the fish hand-off block from ${rc##*/}" fish::remove_block "$rc" || return $?
+    done < <(fish::rc_files)
+}
+[[ -v TEST_FLAG ]] || readonly -f unit::unconfigure
+
+# ─── Constants / globals ────────────────────────────────────────────────────────
+
+# The markers that delimit the hand-off block this unit manages inside each shell
+# rc file. configure inserts the block between them and unconfigure removes
+# everything between them, so the edit is reversible and re-running configure is
+# idempotent. They must be unique lines no hand-written rc would contain.
+FISH_BLOCK_BEGIN='# >>> machine-setup fish >>>'
+FISH_BLOCK_END='# <<< machine-setup fish <<<'
+[[ -v TEST_FLAG ]] || readonly FISH_BLOCK_BEGIN FISH_BLOCK_END
